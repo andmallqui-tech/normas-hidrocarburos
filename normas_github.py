@@ -587,18 +587,14 @@ def main():
     
     # Generar mensaje
     if aceptados:
-        mensaje = f"📋 <b>Normas Relevantes {HOY.strftime('%d/%m/%y')}</b>\n\n"
+        mensaje = f"Buen día equipo, se envía la revisión de normas relevantes al sector {HOY.strftime('%d/%m/%y')}</b>\n\n"
         
         for i, norma in enumerate(aceptados, 1):
             mensaje += f"<b>{i}. {norma['titulo']}</b>\n"
             mensaje += f"{norma['sumilla'][:200]}...\n\n"
-        
-        mensaje += f"\n✅ Total: {len(aceptados)} normas\n"
-        mensaje += f"📁 <a href='https://drive.google.com/drive/folders/{folder_id}'>Ver PDFs en Drive</a>"
     else:
         mensaje = (
-            f"📋 <b>Sin Normas Relevantes</b>\n\n"
-            f"El día de hoy no se encontraron normas relevantes del sector.\n"
+            f"Buen día equipo, el día de hoy no se encontraron normas relevantes del sector.\n\n"
             f"📅 Extraordinaria {AYER.strftime('%d/%m/%y')}\n"
             f"📅 Ordinaria {HOY.strftime('%d/%m/%y')}"
         )
