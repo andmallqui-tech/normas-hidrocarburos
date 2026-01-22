@@ -1,0 +1,71 @@
+name: Buscar Normas Hidrocarburos
+
+on:
+  # Ejecutar de lunes a viernes a las 9:00 AM (hora Lima = 14:00 UTC)
+  schedule:
+    - cron: '0 14 * * 1-5'
+  
+  # Permitir ejecución manual
+  workflow_dispatch:
+
+jobs:
+  buscar-normas:
+    runs-on: ubuntu-latest
+    
+    steps:
+    # 1. Checkout del código
+    - name: 📥 Checkout código
+      uses: actions/checkout@v4
+    
+    # 2. Configurar Python
+    - name: 🐍 Configurar Python 3.11
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    # 3. Instalar dependencias
+    - name: 📦 Instalar dependencias
+      run: |
+        pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    # 4. Configurar Chrome para Selenium
+    - name: 🌐 Configurar Chrome y ChromeDriver
+      uses: browser-actions/setup-chrome@v1
+      with:
+        chrome-version: stable
+    
+    - name: 🔧 Instalar ChromeDriver
+      run: |
+        CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d'.' -f1)
+        CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION}")
+        wget -q "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip"
+        unzip -q chromedriver_linux64.zip
+        sudo mv chromedriver /usr/local/bin/
+        sudo chmod +x /usr/local/bin/chromedriver
+        chromedriver --version
+    
+    # 5. Ejecutar scraping
+    - name: 🔍 Ejecutar scraping de normas
+      env:
+        GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+        DRIVE_FOLDER_ID: ${{ secrets.DRIVE_FOLDER_ID }}
+        SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: |
+        python normas_github.py
+    
+    # 6. Crear resumen en GitHub
+    - name: 📋 Generar resumen
+      if: always()
+      run: |
+        echo "## 🔍 Búsqueda de Normas Completada" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**📅 Fecha:** $(date +'%Y-%m-%d %H:%M:%S')" >> $GITHUB_STEP_SUMMARY
+        echo "**🌍 Timezone:** America/Lima" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "✅ Proceso ejecutado correctamente" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "📱 Revisa tu Telegram para ver los resultados" >> $GITHUB_STEP_SUMMARY
