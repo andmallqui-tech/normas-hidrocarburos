@@ -1,9 +1,9 @@
 name: Buscar Normas Hidrocarburos
 
 on:
-  # Ejecutar de lunes a viernes a las 9:00 AM (hora Lima = 14:00 UTC)
+  # Ejecutar de lunes a domingo a las 7:30 AM (hora Lima = 12:30 UTC)
   schedule:
-    - cron: '0 14 * * 1-5'
+    - cron: '30 12 * * 1-7'
   
   # Permitir ejecución manual
   workflow_dispatch:
@@ -30,19 +30,41 @@ jobs:
         pip install --upgrade pip
         pip install -r requirements.txt
     
-    # 4. Configurar Chrome para Selenium
-    - name: 🌐 Configurar Chrome y ChromeDriver
+    # 4. Configurar Chrome y ChromeDriver (método actualizado 2025)
+    - name: 🌐 Configurar Chrome
       uses: browser-actions/setup-chrome@v1
       with:
         chrome-version: stable
     
     - name: 🔧 Instalar ChromeDriver
       run: |
-        CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d'.' -f1)
-        CHROMEDRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION}")
-        wget -q "https://chromedriver.storage.googleapis.com/${CHROMEDRIVER_VERSION}/chromedriver_linux64.zip"
-        unzip -q chromedriver_linux64.zip
-        sudo mv chromedriver /usr/local/bin/
+        # Obtener versión de Chrome instalada
+        CHROME_VERSION=$(google-chrome --version | awk '{print $3}')
+        echo "Chrome version: $CHROME_VERSION"
+        
+        # Descargar ChromeDriver compatible (nuevo método)
+        wget -q "https://googlechromelabs.github.io/chrome-for-testing/known-good-versions-with-downloads.json" -O versions.json
+        CHROMEDRIVER_URL=$(python3 -c "
+import json, sys
+with open('versions.json') as f:
+    data = json.load(f)
+    for v in reversed(data['versions']):
+        if v['version'].startswith('${CHROME_VERSION%%.*}'):
+            for d in v['downloads'].get('chromedriver', []):
+                if d['platform'] == 'linux64':
+                    print(d['url'])
+                    sys.exit(0)
+")
+        
+        if [ -z "$CHROMEDRIVER_URL" ]; then
+          echo "Error: No se encontró ChromeDriver compatible"
+          exit 1
+        fi
+        
+        echo "Descargando ChromeDriver desde: $CHROMEDRIVER_URL"
+        wget -q "$CHROMEDRIVER_URL" -O chromedriver-linux64.zip
+        unzip -q chromedriver-linux64.zip
+        sudo mv chromedriver-linux64/chromedriver /usr/local/bin/
         sudo chmod +x /usr/local/bin/chromedriver
         chromedriver --version
     
