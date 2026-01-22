@@ -1,9 +1,9 @@
 name: Buscar Normas Hidrocarburos
 
 on:
-  # Ejecutar de lunes a domingo a las 7:30 AM (hora Lima = 12:30 UTC)
+  # Ejecutar de lunes a viernes a las 7:30 AM (hora Lima = 12:30 UTC)
   schedule:
-    - cron: '30 12 * * 1-7'
+    - cron: '30 12 * * 1-5'
   
   # Permitir ejecución manual
   workflow_dispatch:
@@ -30,42 +30,18 @@ jobs:
         pip install --upgrade pip
         pip install -r requirements.txt
     
-    # 4. Configurar Chrome y ChromeDriver (método actualizado 2025)
+    # 4. Configurar Chrome y ChromeDriver (método más simple)
     - name: 🌐 Configurar Chrome
       uses: browser-actions/setup-chrome@v1
       with:
         chrome-version: stable
     
-    - name: 🔧 Instalar ChromeDriver
+    - name: 🔧 Instalar ChromeDriver (versión automática)
+      uses: nanasess/setup-chromedriver@v2
+    
+    - name: ✅ Verificar instalación
       run: |
-        # Obtener versión de Chrome instalada
-        CHROME_VERSION=$(google-chrome --version | awk '{print $3}')
-        echo "Chrome version: $CHROME_VERSION"
-        
-        # Descargar ChromeDriver compatible (nuevo método)
-        wget -q "https://googlechromelabs.github.io/chrome-for-testing/known-good-versions-with-downloads.json" -O versions.json
-        CHROMEDRIVER_URL=$(python3 -c "
-import json, sys
-with open('versions.json') as f:
-    data = json.load(f)
-    for v in reversed(data['versions']):
-        if v['version'].startswith('${CHROME_VERSION%%.*}'):
-            for d in v['downloads'].get('chromedriver', []):
-                if d['platform'] == 'linux64':
-                    print(d['url'])
-                    sys.exit(0)
-")
-        
-        if [ -z "$CHROMEDRIVER_URL" ]; then
-          echo "Error: No se encontró ChromeDriver compatible"
-          exit 1
-        fi
-        
-        echo "Descargando ChromeDriver desde: $CHROMEDRIVER_URL"
-        wget -q "$CHROMEDRIVER_URL" -O chromedriver-linux64.zip
-        unzip -q chromedriver-linux64.zip
-        sudo mv chromedriver-linux64/chromedriver /usr/local/bin/
-        sudo chmod +x /usr/local/bin/chromedriver
+        google-chrome --version
         chromedriver --version
     
     # 5. Ejecutar scraping
