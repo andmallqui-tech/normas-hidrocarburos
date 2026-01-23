@@ -1,9 +1,9 @@
 name: Buscar Normas Hidrocarburos
 
 on:
-  # Ejecutar de lunes a viernes a las 7:30 AM (hora Lima = 12:30 UTC)
+  # Ejecutar de lunes a domingo a las 7:30 AM (hora Lima = 12:30 UTC)
   schedule:
-    - cron: '30 12 * * 1-5'
+  - cron: '30 12 * * *'  # Todos los días a las 7:30 AM Limaschedule:
   
   # Permitir ejecución manual
   workflow_dispatch:
