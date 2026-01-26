@@ -589,12 +589,29 @@ def main():
     print(f"   Duplicados eliminados: {duplicados}")
     print(f"   📊 Candidatos únicos: {len(candidatos_unicos)}")
     
+    # *** DEBUG: Ver tipos extraídos ***
+    print("\n🔍 DEBUG - Análisis de tipos extraídos:")
+    tipos_count = {}
+    for c in candidatos_unicos:
+        tipo = c.get('tipo', 'SIN_TIPO')
+        tipos_count[tipo] = tipos_count.get(tipo, 0) + 1
+    
+    for tipo, count in tipos_count.items():
+        print(f"   {tipo}: {count} normas")
+    
     # *** FILTRADO CON LÓGICA ESPECIAL PARA SECTORES PRIORITARIOS ***
     print("\n🔬 Filtrando relevancia...")
     aceptados = []
     prioritarios = []
     
     for c in candidatos_unicos:
+        # 🔍 DEBUG: Ver cada norma extraordinaria antes del filtro
+        if c.get('tipo') == "Extraordinaria":
+            print(f"\n🔍 Procesando EXTRAORDINARIA:")
+            print(f"   Título: {c['titulo'][:70]}")
+            print(f"   Sector: {c['sector']}")
+            print(f"   Tipo almacenado: '{c.get('tipo')}'")
+        
         # VERIFICAR SI ES SECTOR PRIORITARIO
         es_prioritario, sector_match = es_sector_prioritario(c['sector'])
         
@@ -602,7 +619,8 @@ def main():
             # ⭐ SECTOR PRIORITARIO - SE ACEPTA AUTOMÁTICAMENTE
             aceptados.append(c)
             prioritarios.append(c)
-            print(f"   ⭐ PRIORITARIO: {c['titulo'][:60]} ({sector_match})")
+            tipo_label = f" [{c.get('tipo', 'N/A')}]"
+            print(f"   ⭐ PRIORITARIO{tipo_label}: {c['titulo'][:60]} ({sector_match})")
         else:
             # Aplicar filtro de relevancia normal
             relevante, razon = evaluar_relevancia(
@@ -613,11 +631,26 @@ def main():
             
             if relevante:
                 aceptados.append(c)
-                print(f"   ✅ {c['titulo'][:60]}")
+                tipo_label = f" [{c.get('tipo', 'N/A')}]"
+                print(f"   ✅{tipo_label} {c['titulo'][:60]}")
+            else:
+                # 🔍 DEBUG: Ver por qué se rechazó una extraordinaria
+                if c.get('tipo') == "Extraordinaria":
+                    print(f"   ❌ RECHAZADA: {razon}")
     
     print(f"\n✅ Normas relevantes: {len(aceptados)}")
     print(f"   ⭐ De sectores prioritarios: {len(prioritarios)}")
     print(f"   🔍 Por filtro de relevancia: {len(aceptados) - len(prioritarios)}")
+    
+    # 🔍 DEBUG: Ver tipos en aceptados
+    print("\n🔍 DEBUG - Tipos en normas aceptadas:")
+    tipos_aceptados = {}
+    for norma in aceptados:
+        tipo = norma.get('tipo', 'SIN_TIPO')
+        tipos_aceptados[tipo] = tipos_aceptados.get(tipo, 0) + 1
+    
+    for tipo, count in tipos_aceptados.items():
+        print(f"   {tipo}: {count} normas")
     
     # Crear carpeta y descargar PDFs
     folder_id = None
@@ -658,7 +691,7 @@ def main():
                 norma.get('fecha_pub', ''),
                 norma['sumilla'],
                 norma.get('drive_link', ''),
-                norma['tipo']
+                norma.get('tipo', 'N/A')
             ])
         
         drive_client.append_to_sheet(SPREADSHEET_ID, 'A:F', rows)
@@ -671,7 +704,7 @@ def main():
         corpus_actualizado = texto_base + "\n" + nuevo_contenido
         drive_client.upload_text_file(DRIVE_FOLDER_ID, 'corpus_hidrocarburos.txt', corpus_actualizado)
     
-    # Generar mensaje Telegram
+    # *** GENERAR MENSAJE TELEGRAM CON ETIQUETA (Extraordinaria) ***
     if aceptados:
         if DIA_SEMANA == 0:
             fecha_inicio = fechas_ordinarias[-1].strftime('%d/%m/%y')
@@ -681,13 +714,25 @@ def main():
             mensaje = f"Buen día equipo, se envía la revisión de normas relevantes al sector {HOY.strftime('%d/%m/%y')}\n\n"
         
         print("\n📱 Generando mensaje Telegram...")
+        print("🔍 DEBUG - Verificando campo 'tipo' en cada norma:")
+        
         for norma in aceptados:
-            # Mostrar tipo de edición
-            tipo_etiqueta = ""
-            if norma.get('tipo') == "Extraordinaria":
-                tipo_etiqueta = " (Extraordinaria)"
-                print(f"   📌 Marcando como Extraordinaria: {norma['titulo'][:50]}")
+            # 🔍 DEBUG: Verificar el campo tipo
+            tipo_raw = norma.get('tipo')
+            print(f"\n   Norma: {norma['titulo'][:50]}")
+            print(f"   Campo 'tipo': '{tipo_raw}'")
+            print(f"   Es None: {tipo_raw is None}")
+            print(f"   Comparación == 'Extraordinaria': {tipo_raw == 'Extraordinaria'}")
             
+            # Determinar etiqueta de tipo
+            tipo_etiqueta = ""
+            if tipo_raw and str(tipo_raw).strip().lower() == "extraordinaria":
+                tipo_etiqueta = " (Extraordinaria)"
+                print(f"   ✅ SE MARCARÁ COMO EXTRAORDINARIA")
+            else:
+                print(f"   ℹ️ No se marca (tipo='{tipo_raw}')")
+            
+            # Construir mensaje
             mensaje += f"<b>{norma['titulo']}{tipo_etiqueta}</b>\n"
             mensaje += f"{norma['sumilla']}\n\n"
     else:
@@ -709,27 +754,24 @@ def main():
                 f"📅 Ordinaria {HOY.strftime('%d/%m/%y')}"
             )
     
+    # 🔍 DEBUG: Ver mensaje final
+    print("\n🔍 DEBUG - Mensaje final a enviar:")
+    print("="*80)
+    print(mensaje)
+    print("="*80)
+    
     # Enviar Telegram
     print("\n💬 Enviando Telegram...")
-    enviar_telegram(mensaje, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
-    
-    # Resumen final
-    print("\n" + "="*80)
-    print("🎉 PROCESO COMPLETADO")
-    print("="*80)
-    print(f"✅ Normas procesadas: {len(aceptados)}")
-    print(f"   ⭐ Prioritarias (MINEM/OSINERGMIN): {len(prioritarios)}")
-    print(f"   🔍 Por relevancia: {len(aceptados) - len(prioritarios)}")
-    print(f"📁 Carpeta Drive: {folder_name if aceptados else 'N/A'}")
-    if DIA_SEMANA == 0:
-        print(f"📅 Modo: LUNES (revisó {DIAS_A_REVISAR} días)")
-    print("="*80)
+enviar_telegram(mensaje, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
 
-if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        print(f"\n❌ ERROR CRÍTICO: {e}")
-        import traceback
-        traceback.print_exc()
-        exit(1)
+# Resumen final
+print("\n" + "="*80)
+print("🎉 PROCESO COMPLETADO")
+print("="*80)
+print(f"✅ Normas procesadas: {len(aceptados)}")
+print(f"   ⭐ Prioritarias (MINEM/OSINERGMIN): {len(prioritarios)}")
+print(f"   🔍 Por relevancia: {len(aceptados) - len(prioritarios)}")
+print(f"📁 Carpeta Drive: {folder_name if aceptados else 'N/A'}")
+if DIA_SEMANA == 0:
+    print(f"📅 Modo: LUNES (revisó {DIAS_A_REVISAR} días)")
+print("="*80)
