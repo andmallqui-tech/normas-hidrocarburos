@@ -684,7 +684,7 @@ def main():
         for norma in aceptados:
             # Mostrar tipo de edición
             tipo_etiqueta = ""
-            if str(norma.get('tipo', '')).strip() == "Extraordinaria":
+            if str(norma.get('tipo', '')).strip().lower() == "extraordinaria":
                 tipo_etiqueta = " (Extraordinaria)"
                 print(f"   📌 Marcando como Extraordinaria: {norma['titulo'][:50]}")
             
