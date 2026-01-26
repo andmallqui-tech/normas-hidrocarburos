@@ -1,9 +1,9 @@
 name: Buscar Normas Hidrocarburos
 
 on:
-  # Ejecutar de lunes a domingo a las 7:30 AM (hora Lima = 12:30 UTC)
+  # Ejecutar de lunes a viernes a las 7:30 AM (hora Lima = 12:30 UTC)
   schedule:
-  - cron: '30 12 * * *'  # Todos los días a las 7:30 AM Limaschedule:
+    - cron: '30 12 * * 1-5'  # Lunes a Viernes
   
   # Permitir ejecución manual
   workflow_dispatch:
@@ -30,13 +30,13 @@ jobs:
         pip install --upgrade pip
         pip install -r requirements.txt
     
-    # 4. Configurar Chrome y ChromeDriver (método más simple)
+    # 4. Configurar Chrome y ChromeDriver
     - name: 🌐 Configurar Chrome
       uses: browser-actions/setup-chrome@v1
       with:
         chrome-version: stable
     
-    - name: 🔧 Instalar ChromeDriver (versión automática)
+    - name: 🔧 Instalar ChromeDriver
       uses: nanasess/setup-chromedriver@v2
     
     - name: ✅ Verificar instalación
