@@ -2,7 +2,7 @@
 =============================================================================
 SISTEMA AUTOMATIZADO DE NORMAS DE HIDROCARBUROS
 Versión GitHub Actions + Google Drive + Telegram
-Con soporte para fin de semana (Lunes revisa Sábado y Domingo)
+CON DETECCIÓN AUTOMÁTICA DE LUNES (fin de semana completo)
 =============================================================================
 """
 
@@ -43,41 +43,9 @@ print("="*80)
 print("🚀 SISTEMA DE NORMAS - GITHUB ACTIONS")
 print("="*80)
 
-# Fechas
+# Fechas y detección de lunes
 HOY = date.today()
-DIA_SEMANA = HOY.weekday()  # 0=Lunes, 1=Martes, ..., 6=Domingo
-AYER = HOY - timedelta(days=1)  # Siempre definir para mensajes
-
-# Determinar qué fechas revisar según el día
-if DIA_SEMANA == 0:  # LUNES
-    # Revisar todo el fin de semana
-    # Las fechas son las que aparecen en el buscador de El Peruano
-    FECHA_VIERNES = HOY - timedelta(days=3)   # Viernes (hace 3 días)
-    FECHA_SABADO = HOY - timedelta(days=2)    # Sábado (hace 2 días)
-    FECHA_DOMINGO = HOY - timedelta(days=1)   # Domingo (hace 1 día)
-    
-    FECHAS_A_REVISAR = [
-        # Viernes
-        ('Viernes Extra', FECHA_VIERNES, True),      # Viernes extraordinaria
-        # Sábado
-        ('Sábado Ord', FECHA_SABADO, False),         # Sábado ordinaria
-        ('Sábado Extra', FECHA_SABADO, True),        # Sábado extraordinaria (del viernes)
-        # Domingo
-        ('Domingo Ord', FECHA_DOMINGO, False),       # Domingo ordinaria
-        ('Domingo Extra', FECHA_DOMINGO, True),      # Domingo extraordinaria (del sábado)
-    ]
-    print(f"📅 ES LUNES - Revisando fin de semana completo:")
-    print(f"   🗓️  Viernes {FECHA_VIERNES.strftime('%d/%m/%Y')} (Extra)")
-    print(f"   🗓️  Sábado {FECHA_SABADO.strftime('%d/%m/%Y')} (Ord + Extra)")
-    print(f"   🗓️  Domingo {FECHA_DOMINGO.strftime('%d/%m/%Y')} (Ord + Extra)")
-else:
-    # Martes a Viernes: revisar día anterior normal
-    FECHAS_A_REVISAR = [
-        ('Ayer Extra', AYER, True),   # Extraordinaria del día anterior
-        ('Hoy Ord', HOY, False),      # Ordinaria de hoy
-    ]
-    print(f"📅 HOY: {HOY.strftime('%d/%m/%Y')}")
-    print(f"📅 AYER: {AYER.strftime('%d/%m/%Y')}")
+DIA_SEMANA = HOY.weekday()  # 0=Lun, 1=Mar, 2=Mié, 3=Jue, 4=Vie, 5=Sáb, 6=Dom
 
 # Google Cloud (desde variables de entorno)
 CREDENTIALS_JSON = os.getenv('GOOGLE_CREDENTIALS_JSON')
@@ -88,6 +56,16 @@ SPREADSHEET_ID = os.getenv('SPREADSHEET_ID')
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
+# Determinar cuántos días revisar
+if DIA_SEMANA == 0:  # Lunes
+    DIAS_A_REVISAR = 3
+    print("📅 MODO: LUNES - Revisando fin de semana completo (Sáb, Dom, Lun)")
+else:
+    DIAS_A_REVISAR = 1
+    print("📅 MODO: DÍA NORMAL - Revisando solo hoy y ayer")
+
+print(f"📅 HOY: {HOY.strftime('%d/%m/%Y')} ({['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'][DIA_SEMANA]})")
+print(f"🔍 Días a revisar: {DIAS_A_REVISAR}")
 print("="*80)
 
 # =============================================================================
@@ -99,14 +77,7 @@ class GoogleDriveClient:
     
     def __init__(self, credentials_json):
         # Decodificar credenciales desde base64
-        try:
-            # Intentar decodificar base64
-            decoded = base64.b64decode(credentials_json)
-            credentials_dict = json.loads(decoded.decode('utf-8'))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            # Si falla, asumir que ya está en formato JSON
-            print("   ⚠️ Decodificación base64 falló, usando JSON directo")
-            credentials_dict = json.loads(credentials_json)
+        credentials_dict = json.loads(base64.b64decode(credentials_json))
         
         credentials = service_account.Credentials.from_service_account_info(
             credentials_dict,
@@ -401,7 +372,7 @@ def crear_driver():
     return driver
 
 def extraer_normas(driver, fecha_obj, es_extraordinaria=False):
-    """Extrae normas"""
+    """Extrae normas de una fecha específica"""
     
     tipo = "Extraordinaria" if es_extraordinaria else "Ordinaria"
     fecha_str = fecha_obj.strftime("%d/%m/%Y")
@@ -453,18 +424,16 @@ def extraer_normas(driver, fecha_obj, es_extraordinaria=False):
                 titulo_tag = art.find("h5")
                 titulo = titulo_tag.get_text(" ", strip=True) if titulo_tag else ""
                 
-                # Sumilla
+                # Sumilla y fecha
                 p_tags = art.find_all("p")
                 sumilla = ""
                 fecha_pub = ""
                 
                 if p_tags:
-                    # Fecha
                     b = p_tags[0].find("b")
                     if b:
                         fecha_pub = b.get_text(" ", strip=True).replace("Fecha:", "").strip()
                     
-                    # Sumilla
                     if len(p_tags) >= 2:
                         sumilla = p_tags[1].get_text(" ", strip=True)
                 
@@ -490,6 +459,7 @@ def extraer_normas(driver, fecha_obj, es_extraordinaria=False):
                     "sector": sector,
                     "titulo": titulo,
                     "fecha_pub": fecha_pub,
+                    "fecha_busqueda": fecha_str,  # Para tracking
                     "sumilla": sumilla,
                     "pdf_url": pdf_url,
                     "tipo": tipo,
@@ -520,7 +490,7 @@ def main():
     print("\n📁 Conectando a Google Drive...")
     drive_client = GoogleDriveClient(CREDENTIALS_JSON)
     
-    # Cargar o crear corpus
+    # Cargar corpus
     print("\n🧠 Cargando corpus...")
     corpus_file_id = drive_client.get_file_by_name(DRIVE_FOLDER_ID, 'corpus_hidrocarburos.txt')
     
@@ -536,29 +506,65 @@ def main():
     vectorizador.fit([texto_base])
     X_base = vectorizador.transform([texto_base])
     
+    # Generar fechas a revisar
+    print("\n📅 Generando fechas a revisar...")
+    fechas_ordinarias = []
+    fechas_extraordinarias = []
+    
+    for i in range(DIAS_A_REVISAR):
+        fecha_ord = HOY - timedelta(days=i)
+        fecha_ext = HOY - timedelta(days=i+1)
+        
+        fechas_ordinarias.append(fecha_ord)
+        fechas_extraordinarias.append(fecha_ext)
+        
+        print(f"   {i+1}. Ordinaria: {fecha_ord.strftime('%d/%m/%Y')} | Extraordinaria: {fecha_ext.strftime('%d/%m/%Y')}")
+    
     # Selenium
     print("\n🌐 Iniciando navegador...")
     driver = crear_driver()
     
-    # Extraer normas según las fechas determinadas
+    # Extraer normas
     print("\n📰 Extrayendo normas...")
     todos_candidatos = []
     
-    for label, fecha_obj, es_extraordinaria in FECHAS_A_REVISAR:
-        candidatos = extraer_normas(driver, fecha_obj, es_extraordinaria)
+    # Extraer ordinarias
+    for fecha in fechas_ordinarias:
+        candidatos = extraer_normas(driver, fecha, es_extraordinaria=False)
+        todos_candidatos.extend(candidatos)
+        time.sleep(2)
+    
+    # Extraer extraordinarias
+    for fecha in fechas_extraordinarias:
+        candidatos = extraer_normas(driver, fecha, es_extraordinaria=True)
         todos_candidatos.extend(candidatos)
         time.sleep(2)
     
     driver.quit()
     print("\n✅ Navegador cerrado")
     
-    print(f"\n📊 Total candidatos: {len(todos_candidatos)}")
+    # Deduplicar (por si una norma se repite)
+    print("\n🔄 Deduplicando normas...")
+    vistos = set()
+    candidatos_unicos = []
     
-    # Filtrar
+    for c in todos_candidatos:
+        # Clave única: título + fecha publicación
+        key = (c['titulo'].strip().lower(), c.get('fecha_pub', ''))
+        if key not in vistos and key[0]:  # Solo si tiene título
+            vistos.add(key)
+            candidatos_unicos.append(c)
+    
+    duplicados = len(todos_candidatos) - len(candidatos_unicos)
+    print(f"   Total extraído: {len(todos_candidatos)}")
+    print(f"   Duplicados eliminados: {duplicados}")
+    print(f"   📊 Candidatos únicos: {len(candidatos_unicos)}")
+    
+    # Filtrar relevancia
     print("\n🔬 Filtrando relevancia...")
     aceptados = []
     
-    for c in todos_candidatos:
+    for c in candidatos_unicos:
         relevante, razon = evaluar_relevancia(
             c['texto_completo'],
             vectorizador,
@@ -571,7 +577,7 @@ def main():
     
     print(f"\n✅ Normas relevantes: {len(aceptados)}")
     
-    # Crear carpeta del día y descargar PDFs
+    # Crear carpeta y descargar PDFs
     folder_id = None
     if aceptados:
         print("\n📥 Descargando PDFs...")
@@ -582,14 +588,11 @@ def main():
         if folder_id:
             for norma in aceptados:
                 try:
-                    # Descargar PDF
                     response = requests.get(norma['pdf_url'], timeout=30)
                     if response.status_code == 200:
-                        # Nombre limpio
                         filename = re.sub(r'[^\w\s-]', '', norma['titulo'][:100])
                         filename = re.sub(r'\s+', '_', filename) + '.pdf'
                         
-                        # Subir a Drive
                         link = drive_client.upload_pdf(folder_id, filename, response.content)
                         norma['drive_link'] = link if link else norma['pdf_url']
                         
@@ -626,38 +629,38 @@ def main():
         corpus_actualizado = texto_base + "\n" + nuevo_contenido
         drive_client.upload_text_file(DRIVE_FOLDER_ID, 'corpus_hidrocarburos.txt', corpus_actualizado)
     
-    # Generar mensaje
+    # Generar mensaje Telegram
     if aceptados:
-        # Determinar rango de fechas en el mensaje
-        if DIA_SEMANA == 0:  # Lunes
-            rango_fechas = f"del fin de semana ({FECHA_SABADO.strftime('%d/%m/%y')} - {FECHA_DOMINGO.strftime('%d/%m/%y')})"
+        # Detectar si es lunes para mensaje especial
+        if DIA_SEMANA == 0:
+            fecha_inicio = fechas_ordinarias[-1].strftime('%d/%m/%y')
+            fecha_fin = HOY.strftime('%d/%m/%y')
+            mensaje = f"📅 <b>Reporte Lunes - Fin de Semana Completo</b>\n"
+            mensaje += f"Del {fecha_inicio} al {fecha_fin}\n\n"
         else:
-            rango_fechas = f"al sector {HOY.strftime('%d/%m/%y')}"
-        
-        mensaje = f"Buen día equipo, se envía la revisión de normas relevantes {rango_fechas}\n\n"
+            mensaje = f"Buen día equipo, se envía la revisión de normas relevantes al sector {HOY.strftime('%d/%m/%y')}\n\n"
         
         for i, norma in enumerate(aceptados, 1):
             mensaje += f"<b>{i}. {norma['titulo']}</b>\n"
             mensaje += f"{norma['sumilla'][:200]}...\n\n"
-        
-        mensaje += f"\n✅ Total: {len(aceptados)} normas\n"
-        mensaje += f"📁 <a href='https://drive.google.com/drive/folders/{folder_id}'>Ver PDFs en Drive</a>"
     else:
-        # Mensaje cuando no hay normas
-        if DIA_SEMANA == 0:  # Lunes
+        if DIA_SEMANA == 0:
             mensaje = (
-                f"Buen día equipo, no se encontraron normas relevantes del sector durante el fin de semana.\n\n"
-                f"📅 Sábado {FECHA_SABADO.strftime('%d/%m/%y')} (Extraordinaria viernes + Ordinaria sábado)\n"
-                f"📅 Domingo {FECHA_DOMINGO.strftime('%d/%m/%y')} (Extraordinaria sábado + Ordinaria domingo)"
+                f"📅 <b>Reporte Lunes - Fin de Semana Completo</b>\n\n"
+                f"No se encontraron normas relevantes del sector en el periodo revisado.\n"
+                f"📅 Sábado {fechas_extraordinarias[-1].strftime('%d/%m/%y')}\n"
+                f"📅 Domingo {fechas_extraordinarias[-2].strftime('%d/%m/%y')}\n"
+                f"📅 Lunes {HOY.strftime('%d/%m/%y')}"
             )
         else:
+            ayer = HOY - timedelta(days=1)
             mensaje = (
                 f"Buen día equipo, el día de hoy no se encontraron normas relevantes del sector.\n\n"
-                f"📅 Extraordinaria {AYER.strftime('%d/%m/%y')}\n"
+                f"📅 Extraordinaria {ayer.strftime('%d/%m/%y')}\n"
                 f"📅 Ordinaria {HOY.strftime('%d/%m/%y')}"
             )
     
-    # Enviar a Telegram
+    # Enviar Telegram
     print("\n💬 Enviando Telegram...")
     enviar_telegram(mensaje, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
     
@@ -666,8 +669,9 @@ def main():
     print("🎉 PROCESO COMPLETADO")
     print("="*80)
     print(f"✅ Normas procesadas: {len(aceptados)}")
-    if aceptados and folder_id:
-        print(f"📁 Carpeta Drive: {HOY.strftime('%Y-%m-%d')}")
+    print(f"📁 Carpeta Drive: {folder_name if aceptados else 'N/A'}")
+    if DIA_SEMANA == 0:
+        print(f"📅 Modo: LUNES (revisó {DIAS_A_REVISAR} días)")
     print("="*80)
 
 if __name__ == "__main__":
