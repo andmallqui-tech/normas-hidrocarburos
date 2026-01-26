@@ -680,8 +680,15 @@ def main():
         else:
             mensaje = f"Buen día equipo, se envía la revisión de normas relevantes al sector {HOY.strftime('%d/%m/%y')}\n\n"
         
+        print("\n📱 Generando mensaje Telegram...")
         for norma in aceptados:
-            mensaje += f"<b>{norma['titulo']}</b>\n"
+            # Mostrar tipo de edición
+            tipo_etiqueta = ""
+            if norma.get('tipo') == "Extraordinaria":
+                tipo_etiqueta = " (Extraordinaria)"
+                print(f"   📌 Marcando como Extraordinaria: {norma['titulo'][:50]}")
+            
+            mensaje += f"<b>{norma['titulo']}{tipo_etiqueta}</b>\n"
             mensaje += f"{norma['sumilla']}\n\n"
     else:
         if DIA_SEMANA == 0:
