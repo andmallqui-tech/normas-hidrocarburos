@@ -51,20 +51,25 @@ AYER = HOY - timedelta(days=1)  # Siempre definir para mensajes
 # Determinar qué fechas revisar según el día
 if DIA_SEMANA == 0:  # LUNES
     # Revisar todo el fin de semana
-    FECHA_SABADO = HOY - timedelta(days=2)  # Sábado
-    FECHA_DOMINGO = HOY - timedelta(days=1)  # Domingo
-    FECHA_VIERNES = HOY - timedelta(days=3)  # Viernes
+    # Las fechas son las que aparecen en el buscador de El Peruano
+    FECHA_VIERNES = HOY - timedelta(days=3)   # Viernes (hace 3 días)
+    FECHA_SABADO = HOY - timedelta(days=2)    # Sábado (hace 2 días)
+    FECHA_DOMINGO = HOY - timedelta(days=1)   # Domingo (hace 1 día)
     
     FECHAS_A_REVISAR = [
+        # Viernes
         ('Viernes Extra', FECHA_VIERNES, True),      # Viernes extraordinaria
+        # Sábado
         ('Sábado Ord', FECHA_SABADO, False),         # Sábado ordinaria
-        ('Sábado Extra', FECHA_SABADO, True),        # Sábado extraordinaria
+        ('Sábado Extra', FECHA_SABADO, True),        # Sábado extraordinaria (del viernes)
+        # Domingo
         ('Domingo Ord', FECHA_DOMINGO, False),       # Domingo ordinaria
+        ('Domingo Extra', FECHA_DOMINGO, True),      # Domingo extraordinaria (del sábado)
     ]
     print(f"📅 ES LUNES - Revisando fin de semana completo:")
-    print(f"   🗓️  Viernes {FECHA_VIERNES.strftime('%d/%m/%Y')} (Extraordinaria)")
+    print(f"   🗓️  Viernes {FECHA_VIERNES.strftime('%d/%m/%Y')} (Extra)")
     print(f"   🗓️  Sábado {FECHA_SABADO.strftime('%d/%m/%Y')} (Ord + Extra)")
-    print(f"   🗓️  Domingo {FECHA_DOMINGO.strftime('%d/%m/%Y')} (Ordinaria)")
+    print(f"   🗓️  Domingo {FECHA_DOMINGO.strftime('%d/%m/%Y')} (Ord + Extra)")
 else:
     # Martes a Viernes: revisar día anterior normal
     FECHAS_A_REVISAR = [
