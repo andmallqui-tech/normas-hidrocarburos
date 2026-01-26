@@ -658,7 +658,7 @@ def main():
                 norma.get('fecha_pub', ''),
                 norma['sumilla'],
                 norma.get('drive_link', ''),
-                norma.get('tipo', 'N/A')
+                norma['tipo']
             ])
         
         drive_client.append_to_sheet(SPREADSHEET_ID, 'A:F', rows)
@@ -671,7 +671,7 @@ def main():
         corpus_actualizado = texto_base + "\n" + nuevo_contenido
         drive_client.upload_text_file(DRIVE_FOLDER_ID, 'corpus_hidrocarburos.txt', corpus_actualizado)
     
-    # *** GENERAR MENSAJE TELEGRAM CON ETIQUETA (Extraordinaria) ***
+    # Generar mensaje Telegram
     if aceptados:
         if DIA_SEMANA == 0:
             fecha_inicio = fechas_ordinarias[-1].strftime('%d/%m/%y')
@@ -681,15 +681,13 @@ def main():
             mensaje = f"Buen día equipo, se envía la revisión de normas relevantes al sector {HOY.strftime('%d/%m/%y')}\n\n"
         
         print("\n📱 Generando mensaje Telegram...")
-        
         for norma in aceptados:
-            # Determinar si es Extraordinaria
+            # Mostrar tipo de edición
             tipo_etiqueta = ""
-            if norma.get('tipo', '').strip() == "Extraordinaria":
+            if str(norma.get('tipo', '')).strip() == "Extraordinaria":
                 tipo_etiqueta = " (Extraordinaria)"
-                print(f"   📌 Extraordinaria: {norma['titulo'][:50]}")
+                print(f"   📌 Marcando como Extraordinaria: {norma['titulo'][:50]}")
             
-            # Construir mensaje
             mensaje += f"<b>{norma['titulo']}{tipo_etiqueta}</b>\n"
             mensaje += f"{norma['sumilla']}\n\n"
     else:
