@@ -676,26 +676,23 @@ def main():
         if DIA_SEMANA == 0:
             fecha_inicio = fechas_ordinarias[-1].strftime('%d/%m/%y')
             fecha_fin = HOY.strftime('%d/%m/%y')
-            mensaje = f"📅 <b>Reporte Lunes - Fin de Semana Completo</b>\n"
-            mensaje += f"Del {fecha_inicio} al {fecha_fin}\n\n"
+            mensaje = f"Buen día equipo, se envía la revisión de normas relevantes al sector del {fecha_inicio} al {fecha_fin}\n\n"
         else:
             mensaje = f"Buen día equipo, se envía la revisión de normas relevantes al sector {HOY.strftime('%d/%m/%y')}\n\n"
         
-        for i, norma in enumerate(aceptados, 1):
-            # Marcar si es prioritario
-            es_prior, _ = es_sector_prioritario(norma['sector'])
-            prefijo = "⭐ " if es_prior else ""
-            
-            mensaje += f"<b>{prefijo}{i}. {norma['titulo']}</b>\n"
-            mensaje += f"{norma['sumilla'][:200]}...\n\n"
+        for norma in aceptados:
+            mensaje += f"<b>{norma['titulo']}</b>\n"
+            mensaje += f"{norma['sumilla']}\n\n"
     else:
         if DIA_SEMANA == 0:
+            fecha_inicio = fechas_ordinarias[-1].strftime('%d/%m/%y')
+            fecha_fin = HOY.strftime('%d/%m/%y')
             mensaje = (
-                f"📅 <b>Reporte Lunes - Fin de Semana Completo</b>\n\n"
-                f"No se encontraron normas relevantes del sector en el periodo revisado.\n"
-                f"📅 Sábado {fechas_extraordinarias[-1].strftime('%d/%m/%y')}\n"
-                f"📅 Domingo {fechas_extraordinarias[-2].strftime('%d/%m/%y')}\n"
-                f"📅 Lunes {HOY.strftime('%d/%m/%y')}"
+                f"Buen día equipo, el día de hoy no se encontraron normas relevantes del sector.\n\n"
+                f"📅 Periodo revisado: del {fecha_inicio} al {fecha_fin}\n"
+                f"   • Sábado {fechas_extraordinarias[-1].strftime('%d/%m/%y')} (Extraordinaria)\n"
+                f"   • Domingo {fechas_extraordinarias[-2].strftime('%d/%m/%y')} (Extraordinaria)\n"
+                f"   • Lunes {HOY.strftime('%d/%m/%y')} (Ordinaria)"
             )
         else:
             ayer = HOY - timedelta(days=1)
