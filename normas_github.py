@@ -3,6 +3,7 @@
 SISTEMA AUTOMATIZADO DE NORMAS DE HIDROCARBUROS
 Versión GitHub Actions + Google Drive + Telegram
 CON DETECCIÓN AUTOMÁTICA DE LUNES (fin de semana completo)
+CON FILTRO ESPECIAL MINEM/OSINERGMIN
 =============================================================================
 """
 
@@ -273,6 +274,19 @@ def normalizar_texto(texto):
     texto = re.sub(r'\s+', ' ', texto).strip()
     return texto
 
+# *** SECTORES PRIORITARIOS - SIEMPRE SE DESCARGAN ***
+SECTORES_PRIORITARIOS = set([normalizar_texto(x) for x in [
+    'energia y minas',
+    'energia minas',
+    'minem',
+    'ministerio de energia y minas',
+    'ministerio de energia minas',
+    'osinergmin',
+    'organismo supervisor de la inversion en energia y mineria',
+    'organismo supervisor inversion energia mineria',
+    'supervision energia mineria'
+]])
+
 # Keywords del sector
 KEYWORDS_MANUAL = [normalizar_texto(x) for x in [
     'hidrocarburos','hidrocarburo','petroleo','gas natural','gnv','glp',
@@ -306,6 +320,22 @@ for kw in KEYWORDS_MANUAL:
 
 print(f"🧠 Keywords cargadas: {len(KEYWORDS_MANUAL)}")
 print(f"🧠 Tokens técnicos: {len(tokens_tecnicos)}")
+print(f"⭐ Sectores prioritarios: {len(SECTORES_PRIORITARIOS)}")
+
+# =============================================================================
+# EVALUACIÓN DE SECTOR PRIORITARIO
+# =============================================================================
+
+def es_sector_prioritario(sector):
+    """Verifica si el sector es MINEM u OSINERGMIN"""
+    sector_norm = normalizar_texto(sector)
+    
+    # Verificar coincidencia exacta
+    for sector_prior in SECTORES_PRIORITARIOS:
+        if sector_prior in sector_norm:
+            return True, sector_prior
+    
+    return False, None
 
 # =============================================================================
 # EVALUACIÓN DE RELEVANCIA
@@ -459,7 +489,7 @@ def extraer_normas(driver, fecha_obj, es_extraordinaria=False):
                     "sector": sector,
                     "titulo": titulo,
                     "fecha_pub": fecha_pub,
-                    "fecha_busqueda": fecha_str,  # Para tracking
+                    "fecha_busqueda": fecha_str,
                     "sumilla": sumilla,
                     "pdf_url": pdf_url,
                     "tipo": tipo,
@@ -543,15 +573,14 @@ def main():
     driver.quit()
     print("\n✅ Navegador cerrado")
     
-    # Deduplicar (por si una norma se repite)
+    # Deduplicar
     print("\n🔄 Deduplicando normas...")
     vistos = set()
     candidatos_unicos = []
     
     for c in todos_candidatos:
-        # Clave única: título + fecha publicación
         key = (c['titulo'].strip().lower(), c.get('fecha_pub', ''))
-        if key not in vistos and key[0]:  # Solo si tiene título
+        if key not in vistos and key[0]:
             vistos.add(key)
             candidatos_unicos.append(c)
     
@@ -560,22 +589,35 @@ def main():
     print(f"   Duplicados eliminados: {duplicados}")
     print(f"   📊 Candidatos únicos: {len(candidatos_unicos)}")
     
-    # Filtrar relevancia
+    # *** FILTRADO CON LÓGICA ESPECIAL PARA SECTORES PRIORITARIOS ***
     print("\n🔬 Filtrando relevancia...")
     aceptados = []
+    prioritarios = []
     
     for c in candidatos_unicos:
-        relevante, razon = evaluar_relevancia(
-            c['texto_completo'],
-            vectorizador,
-            X_base
-        )
+        # VERIFICAR SI ES SECTOR PRIORITARIO
+        es_prioritario, sector_match = es_sector_prioritario(c['sector'])
         
-        if relevante:
+        if es_prioritario:
+            # ⭐ SECTOR PRIORITARIO - SE ACEPTA AUTOMÁTICAMENTE
             aceptados.append(c)
-            print(f"   ✅ {c['titulo'][:60]}")
+            prioritarios.append(c)
+            print(f"   ⭐ PRIORITARIO: {c['titulo'][:60]} ({sector_match})")
+        else:
+            # Aplicar filtro de relevancia normal
+            relevante, razon = evaluar_relevancia(
+                c['texto_completo'],
+                vectorizador,
+                X_base
+            )
+            
+            if relevante:
+                aceptados.append(c)
+                print(f"   ✅ {c['titulo'][:60]}")
     
     print(f"\n✅ Normas relevantes: {len(aceptados)}")
+    print(f"   ⭐ De sectores prioritarios: {len(prioritarios)}")
+    print(f"   🔍 Por filtro de relevancia: {len(aceptados) - len(prioritarios)}")
     
     # Crear carpeta y descargar PDFs
     folder_id = None
@@ -631,7 +673,6 @@ def main():
     
     # Generar mensaje Telegram
     if aceptados:
-        # Detectar si es lunes para mensaje especial
         if DIA_SEMANA == 0:
             fecha_inicio = fechas_ordinarias[-1].strftime('%d/%m/%y')
             fecha_fin = HOY.strftime('%d/%m/%y')
@@ -641,7 +682,11 @@ def main():
             mensaje = f"Buen día equipo, se envía la revisión de normas relevantes al sector {HOY.strftime('%d/%m/%y')}\n\n"
         
         for i, norma in enumerate(aceptados, 1):
-            mensaje += f"<b>{i}. {norma['titulo']}</b>\n"
+            # Marcar si es prioritario
+            es_prior, _ = es_sector_prioritario(norma['sector'])
+            prefijo = "⭐ " if es_prior else ""
+            
+            mensaje += f"<b>{prefijo}{i}. {norma['titulo']}</b>\n"
             mensaje += f"{norma['sumilla'][:200]}...\n\n"
     else:
         if DIA_SEMANA == 0:
@@ -669,6 +714,8 @@ def main():
     print("🎉 PROCESO COMPLETADO")
     print("="*80)
     print(f"✅ Normas procesadas: {len(aceptados)}")
+    print(f"   ⭐ Prioritarias (MINEM/OSINERGMIN): {len(prioritarios)}")
+    print(f"   🔍 Por relevancia: {len(aceptados) - len(prioritarios)}")
     print(f"📁 Carpeta Drive: {folder_name if aceptados else 'N/A'}")
     if DIA_SEMANA == 0:
         print(f"📅 Modo: LUNES (revisó {DIAS_A_REVISAR} días)")
