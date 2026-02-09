@@ -1,7 +1,14 @@
 """
 =============================================================================
-SISTEMA AUTOMATIZADO DE NORMAS - GITHUB ACTIONS
-Basado en el código de VS Code que SÍ FUNCIONA
+SISTEMA AUTOMATIZADO DE NORMAS - VERSIÓN CORREGIDA PARA GITHUB ACTIONS
+=============================================================================
+Basado en la lógica funcional del código de Visual Studio Code
+Correcciones principales:
+1. Scroll inteligente con detección de estabilidad
+2. Selectores específicos de artículos
+3. Búsqueda mejorada de PDF URL
+4. Estructura de datos estandarizada
+5. Lógica correcta de fechas para lunes
 =============================================================================
 """
 
@@ -34,27 +41,25 @@ from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 # =============================================================================
 
 print("="*100)
-print("🚀 SISTEMA DE NORMAS - GITHUB ACTIONS")
+print("🚀 SISTEMA DE NORMAS - VERSIÓN CORREGIDA PARA GITHUB")
 print("="*100)
 
 HOY = date.today()
-AYER = HOY - timedelta(days=1)
 DIA_SEMANA = HOY.weekday()
 
-# Variables de entorno
 CREDENTIALS_JSON = os.getenv('GOOGLE_CREDENTIALS_JSON')
 DRIVE_FOLDER_ID = os.getenv('DRIVE_FOLDER_ID')
 SPREADSHEET_ID = os.getenv('SPREADSHEET_ID')
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
-# CARPETA LOCAL TEMPORAL PARA PDFs (como en VS Code)
-CARPETA_DIA = f"/tmp/normas_{HOY.strftime('%Y-%m-%d')}"
-os.makedirs(CARPETA_DIA, exist_ok=True)
+# CORRECCIÓN 1: Lógica correcta de días a revisar
+# Lunes (0): revisa Viernes (2 días), Sábado (1 día) y Domingo (0 días) = 3 ediciones ordinarias
+# Otros días: revisa solo ayer (1 día) = 1 edición ordinaria
+DIAS_A_REVISAR = 3 if DIA_SEMANA == 0 else 1
 
 print(f"📅 HOY: {HOY.strftime('%d/%m/%Y')} - DÍA: {['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'][DIA_SEMANA]}")
-print(f"📅 AYER: {AYER.strftime('%d/%m/%Y')}")
-print(f"📁 Carpeta temporal PDFs: {CARPETA_DIA}")
+print(f"🔍 DÍAS A REVISAR: {DIAS_A_REVISAR}")
 print("="*100)
 
 # =============================================================================
@@ -78,6 +83,10 @@ class GoogleDriveClient:
             query = f"name='{filename}' and '{folder_id}' in parents and trashed=false"
             results = self.drive_service.files().list(q=query, fields='files(id, name)').execute()
             files = results.get('files', [])
+            if files:
+                print(f"   ✅ Archivo encontrado: {filename} (ID: {files[0]['id']})")
+            else:
+                print(f"   ℹ️ Archivo NO existe: {filename}")
             return files[0]['id'] if files else None
         except Exception as e:
             print(f"   ❌ Error buscando {filename}: {e}")
@@ -85,6 +94,7 @@ class GoogleDriveClient:
     
     def download_text_file(self, file_id):
         try:
+            print(f"   ⬇️ Descargando archivo ID: {file_id}...")
             request = self.drive_service.files().get_media(fileId=file_id)
             fh = io.BytesIO()
             downloader = MediaIoBaseDownload(fh, request)
@@ -92,7 +102,17 @@ class GoogleDriveClient:
             while not done:
                 _, done = downloader.next_chunk()
             content = fh.getvalue().decode('utf-8')
-            print(f"   ✅ Corpus descargado: {len(content.split())} palabras")
+            
+            palabras = len(content.split())
+            lineas = len(content.split('\n'))
+            
+            print(f"   ✅ CORPUS DESCARGADO EXITOSAMENTE:")
+            print(f"      📊 Tamaño: {len(content)} caracteres")
+            print(f"      📊 Palabras: {palabras}")
+            print(f"      📊 Líneas: {lineas}")
+            print(f"      📋 PRIMEROS 300 CARACTERES:")
+            print(f"      {content[:300]}...")
+            
             return content
         except Exception as e:
             print(f"   ❌ Error descargando: {e}")
@@ -100,47 +120,58 @@ class GoogleDriveClient:
     
     def upload_text_file(self, folder_id, filename, content):
         try:
+            print(f"\n💾 SUBIENDO/ACTUALIZANDO: {filename}")
+            print(f"   📊 Tamaño: {len(content)} chars, {len(content.split())} palabras")
+            
             file_metadata = {'name': filename, 'parents': [folder_id], 'mimeType': 'text/plain'}
             media = MediaIoBaseUpload(io.BytesIO(content.encode('utf-8')), mimetype='text/plain', resumable=True)
             existing_id = self.get_file_by_name(folder_id, filename)
             
             if existing_id:
                 self.drive_service.files().update(fileId=existing_id, media_body=media).execute()
-                print(f"   ✅ Corpus actualizado")
+                print(f"   ✅ CORPUS ACTUALIZADO EN DRIVE (ID: {existing_id})")
             else:
-                self.drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
-                print(f"   ✅ Corpus creado")
+                file = self.drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
+                print(f"   ✅ CORPUS CREADO EN DRIVE (ID: {file.get('id')})")
+            
             return True
         except Exception as e:
-            print(f"   ❌ Error subiendo corpus: {e}")
+            print(f"   ❌ Error subiendo: {e}")
             return False
     
-    def upload_pdf(self, folder_id, filename, filepath):
-        """Sube PDF desde archivo local (como VS Code)"""
+    def upload_pdf(self, folder_id, filename, pdf_bytes):
         try:
-            with open(filepath, 'rb') as f:
-                pdf_bytes = f.read()
+            print(f"\n📤 SUBIENDO PDF: {filename}")
+            print(f"   📊 Tamaño: {len(pdf_bytes) / 1024:.2f} KB")
             
             file_metadata = {'name': filename, 'parents': [folder_id], 'mimeType': 'application/pdf'}
             media = MediaIoBaseUpload(io.BytesIO(pdf_bytes), mimetype='application/pdf', resumable=True)
             file = self.drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
             
-            return file.get('webViewLink', '')
+            link = file.get('webViewLink', '')
+            print(f"   ✅ PDF SUBIDO EXITOSAMENTE")
+            print(f"   🔗 Link: {link}")
+            
+            return link
         except Exception as e:
-            print(f"   ❌ Error subiendo PDF: {e}")
+            print(f"   ❌ ERROR SUBIENDO PDF: {e}")
+            import traceback
+            traceback.print_exc()
             return None
     
     def create_folder(self, parent_id, folder_name):
         try:
+            print(f"\n📁 CREANDO/BUSCANDO CARPETA: {folder_name}")
             existing_id = self.get_file_by_name(parent_id, folder_name)
             if existing_id:
-                print(f"   ✅ Carpeta existe: {folder_name}")
+                print(f"   ✅ Carpeta ya existe (ID: {existing_id})")
                 return existing_id
             
             file_metadata = {'name': folder_name, 'parents': [parent_id], 'mimeType': 'application/vnd.google-apps.folder'}
             folder = self.drive_service.files().create(body=file_metadata, fields='id').execute()
-            print(f"   ✅ Carpeta creada: {folder_name}")
-            return folder.get('id')
+            folder_id = folder.get('id')
+            print(f"   ✅ Carpeta creada (ID: {folder_id})")
+            return folder_id
         except Exception as e:
             print(f"   ❌ Error creando carpeta: {e}")
             return None
@@ -175,127 +206,77 @@ def enviar_telegram(mensaje, bot_token, chat_id):
         return False
 
 # =============================================================================
-# NORMALIZACIÓN Y KEYWORDS (IGUAL QUE VS CODE)
+# NORMALIZACIÓN Y KEYWORDS
 # =============================================================================
 
 def normalizar_texto(texto):
     if not isinstance(texto, str):
         return ""
     texto = texto.lower()
-    texto = re.sub(r'[^a-z0-9\s]', '', texto)
     texto = unicodedata.normalize('NFKD', texto).encode('ascii', 'ignore').decode('utf-8')
+    texto = re.sub(r'[^a-z0-9\s]', ' ', texto)
+    texto = re.sub(r'\s+', ' ', texto).strip()
     return texto
 
+SECTORES_PRIORITARIOS = set([normalizar_texto(x) for x in [
+    'energia y minas', 'energia minas', 'minem',
+    'ministerio de energia y minas', 'osinergmin',
+    'organismo supervisor de la inversion en energia y mineria'
+]])
+
 KEYWORDS_MANUAL = [normalizar_texto(x) for x in [
-    'hidrocarburos','hidrocarburo','hidrocarburifero','hidrocarburifera',
-    'petroleo','petrolero','petrolera','petrolífero',
-    'gas natural','gas licuado','gnv','glp','gnl',
-    'perupetro','osinergmin','minem','oefa','perúpetro',
-    'ministerio de energia','energia y minas','dge','dgh',
-    'organismo de evaluacion y fiscalizacion ambiental', 'produce',
-    'oleoducto','gasoducto','poliducto','refineria','refinerias',
-    'lote','lotes','pozo','pozos','yacimiento','yacimientos',
-    'planta de gas','terminal','estacion de servicio',
-    'planta de fraccionamiento','planta de procesamiento',
-    'exploracion','explotacion','produccion petrolera','perforacion',
-    'upstream','downstream','midstream','extraccion',
-    'transporte de hidrocarburos','distribucion de gas', 'banda de precios',
-    'combustible','combustibles','diesel','gasolina','kerosene', 'diesel b5',
-    'turbo','residual','bunker','asfalto','nafta','gasohol','electromovilidad',
-    'contrato de licencia','canon gasifero','canon petrolero',
-    'regalia','concesion hidrocarburos','licencia de hidrocarburos',
-    'designan','oefa', 'recargos',
-    'reservas hidrocarburos','sismica','geofisica petrolera',
-    'cuenca sedimentaria','barril','bep','barriles equivalentes',
-    'estado de emergencia', 'lima', 'pcm','energia y minas','parque eolico','ductos',
-    'electricidad','mineria','electricas','energeticos','fotovoltaica', 'distribución natural',
-    'fijaron precios','energeticos renovables','recursos energeticos','electrica'
+    'hidrocarburos','hidrocarburo','petroleo','gas natural','gnv','glp',
+    'perupetro','osinergmin','minem','oefa','refineria','oleoducto','gasoducto',
+    'exploracion','explotacion','combustible','diesel','gasolina','kerosene',
+    'canon gasifero','banda de precios','lote','pozo','yacimiento',
+    'diesel b5','turbo','residual','bunker','upstream','downstream',
+    'fraccionamiento','terminal','planta de gas','contrato de licencia',
+    'regalia','concesion','electromovilidad','ductos','fijaron precios',
+    'recursos energeticos','distribucion natural'
 ]]
 
 PALABRAS_OBLIGATORIAS = set([normalizar_texto(x) for x in [
     'hidrocarburos','hidrocarburo','petroleo','gas natural',
     'perupetro','gnv','glp','oleoducto','gasoducto','refineria',
-    'minem','osinergmin','ministerio de energia y minas',
-    'organismo supervisor de la inversión en energía y minería','oefa'
+    'osinergmin','oefa','banda de precios'
 ]])
 
 SECTORES_EXCLUIR = set([normalizar_texto(x) for x in [
     'educacion','salud','defensa','interior','mujer',
-    'desarrollo social','trabajo','migraciones','comercio exterior','cultura',
+    'desarrollo social','trabajo','migraciones','cultura',
     'vivienda','comunicaciones','justicia','relaciones exteriores','midis'
 ]])
 
-# Crear tokens técnicos
-tokens_kw = set()
+tokens_tecnicos = set()
 for kw in KEYWORDS_MANUAL:
-    for t in kw.split():
-        if len(t) > 1:
-            tokens_kw.add(t)
-
-# Stemming simple
-def simple_stem(w):
-    sufijos = ['aciones','acion','amientos','amiento','mente','idad','idades',
-               'iva','ivo','ivos','ivas','izar','izarse','cion','ciones','es','s']
-    for s in sufijos:
-        if w.endswith(s) and len(w) - len(s) > 3:
-            return w[:-len(s)]
-    return w
-
-stems_kw = set(simple_stem(t) for t in tokens_kw)
+    for token in kw.split():
+        if len(token) > 2:
+            tokens_tecnicos.add(token)
 
 print(f"\n🧠 CONFIGURACIÓN DE FILTRADO:")
-print(f"   Keywords: {len(KEYWORDS_MANUAL)}")
-print(f"   Tokens técnicos: {len(tokens_kw)}")
+print(f"   Keywords manuales: {len(KEYWORDS_MANUAL)}")
+print(f"   Tokens técnicos: {len(tokens_tecnicos)}")
+print(f"   Sectores prioritarios: {len(SECTORES_PRIORITARIOS)}")
 print(f"   Palabras obligatorias: {len(PALABRAS_OBLIGATORIAS)}")
 
 # =============================================================================
-# FUNCIONES DE EVALUACIÓN (IGUAL QUE VS CODE)
+# FUNCIONES DE EVALUACIÓN
 # =============================================================================
 
-def similitud_tfidf(texto, vec_global, X_base):
-    try:
-        Y = vec_global.transform([normalizar_texto(texto)])
-        from sklearn.metrics.pairwise import cosine_similarity
-        return float(cosine_similarity(X_base, Y)[0][0])
-    except:
-        return 0.0
+def es_sector_prioritario(sector):
+    sector_norm = normalizar_texto(sector)
+    for sector_prior in SECTORES_PRIORITARIOS:
+        if sector_prior in sector_norm:
+            return True, sector_prior
+    return False, None
 
-def fuzzy_score(texto, texto_base):
-    from rapidfuzz import fuzz
-    frags = []
-    words = texto_base.split()
-    for i in range(0, max(0, len(words)-40), 40):
-        frags.append(" ".join(words[i:i+80]))
-    
-    cand = normalizar_texto(texto)[:400]
-    best = 0
-    for frag in frags[:200]:
-        s = fuzz.partial_ratio(cand, frag[:300])
-        if s > best:
-            best = s
-        if best >= 95:
-            break
-    return best / 100.0
-
-def contar_tokens_tecnicos(texto):
-    toks = [t for t in re.findall(r'\b[0-9a-z\-/]+\b', normalizar_texto(texto)) if len(t) > 2]
-    matches = []
-    for t in toks:
-        st = simple_stem(t)
-        if st in stems_kw:
-            matches.append(t)
-    return len(matches), list(dict.fromkeys(matches))[:8]
-
-def evaluar_relevancia(texto_candidato, vec_global, X_base, texto_base):
-    """IGUAL QUE VS CODE"""
+def evaluar_relevancia(texto_candidato, vectorizador, X_base):
     texto_norm = normalizar_texto(texto_candidato)
     
-    # Verificar sector excluido
     for sector in SECTORES_EXCLUIR:
         if sector in texto_norm:
-            return False, {"razon": f"Sector excluido: {sector}"}
+            return False, f"Sector excluido: {sector}"
     
-    # Verificar palabra obligatoria
     tiene_obligatoria = False
     palabra_encontrada = None
     for palabra in PALABRAS_OBLIGATORIAS:
@@ -305,35 +286,22 @@ def evaluar_relevancia(texto_candidato, vec_global, X_base, texto_base):
             break
     
     if not tiene_obligatoria:
-        return False, {"razon": "Sin palabra obligatoria"}
+        return False, "Sin palabra obligatoria"
     
-    # Análisis técnico
-    cnt, matched = contar_tokens_tecnicos(texto_candidato)
-    tf = similitud_tfidf(texto_candidato, vec_global, X_base)
-    fu = fuzzy_score(texto_candidato, texto_base)
+    count_tokens = sum(1 for token in tokens_tecnicos if token in texto_norm)
     
-    # Score combinado
-    w_tok, w_tfidf, w_fuzz = 0.65, 0.20, 0.15
-    token_score = min(1.0, cnt / max(2, 2))
-    score = w_tok * token_score + w_tfidf * min(1.0, tf/0.2) + w_fuzz * min(1.0, fu/0.6)
+    try:
+        Y = vectorizador.transform([texto_norm])
+        tfidf_score = float(cosine_similarity(X_base, Y)[0][0])
+    except:
+        tfidf_score = 0.0
     
-    # Criterio de relevancia
-    relevante = (cnt >= 3) or (cnt >= 2 and (tf >= 0.15 or score >= 0.50))
-    
-    info = {
-        "count_tokens": cnt,
-        "matched_terms": matched,
-        "tfidf_sim": round(tf, 4),
-        "fuzzy": round(fu, 4),
-        "combined_score": round(score, 4),
-        "relevant": bool(relevante),
-        "razon": f"Palabra obligatoria: {palabra_encontrada}" if relevante else "No cumple umbrales"
-    }
-    
-    return bool(relevante), info
+    relevante = count_tokens >= 3 or (count_tokens >= 2 and tfidf_score >= 0.15)
+    razon = f"✅ {count_tokens} términos, TF-IDF:{tfidf_score:.3f}" if relevante else "❌ Insuficiente"
+    return relevante, razon
 
 # =============================================================================
-# SELENIUM (IGUAL QUE VS CODE)
+# SELENIUM - FUNCIONES AUXILIARES
 # =============================================================================
 
 def crear_driver():
@@ -343,17 +311,13 @@ def crear_driver():
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--disable-gpu")
     options.add_argument("--window-size=1920,1080")
-    options.add_argument("--disable-blink-features=AutomationControlled")
-    options.add_experimental_option("excludeSwitches", ["enable-automation"])
-    options.add_experimental_option('useAutomationExtension', False)
-    options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
-    
+    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
     driver = webdriver.Chrome(options=options)
-    driver.set_page_load_timeout(60)
+    driver.set_page_load_timeout(90)
     return driver
 
 def complete_href(href):
-    """IGUAL QUE VS CODE"""
+    """Completa URL relativa a absoluta - FUNCIÓN CRÍTICA"""
     if not href:
         return None
     href = href.strip()
@@ -366,63 +330,68 @@ def complete_href(href):
     return "https://diariooficial.elperuano.pe/" + href.lstrip("./")
 
 def sanitize_filename(nombre):
-    """IGUAL QUE VS CODE"""
+    """Limpia nombre para usar como archivo"""
     nombre = re.sub(r'[<>:"/\\|?*\n\r\t]', '', nombre)
     nombre = re.sub(r'\s+', '_', nombre.strip())
     return nombre[:150]
 
-def extraer_normas_el_peruano(driver, fecha_obj, es_extraordinaria=False, max_scrolls=40):
+# =============================================================================
+# SELENIUM - EXTRACCIÓN PRINCIPAL (VERSIÓN CORREGIDA)
+# =============================================================================
+
+def extraer_normas(driver, fecha_obj, es_extraordinaria=False):
     """
-    FUNCIÓN EXACTAMENTE IGUAL QUE VS CODE
+    FUNCIÓN CORREGIDA - Extrae normas usando la lógica exacta del código de VS Code
     """
-    tipo = "Extraordinaria" if es_extraordinaria else "Ordinaria"
+    tipo_edicion = "Extraordinaria" if es_extraordinaria else "Ordinaria"
     fecha_str = fecha_obj.strftime("%d/%m/%Y")
     
-    print(f"\n{'='*80}")
-    print(f"🔍 EXTRAYENDO: {tipo} del {fecha_str}")
-    print(f"{'='*80}")
+    print(f"\n{'='*100}")
+    print(f"🔍 EXTRAYENDO: {tipo_edicion} del {fecha_str}")
+    print(f"{'='*100}")
     
     try:
-        print("1️⃣ Accediendo a El Peruano...")
+        print("1️⃣ Cargando página...")
         driver.get("https://diariooficial.elperuano.pe/Normas")
-        time.sleep(4)
+        time.sleep(5)
         
-        print(f"2️⃣ Configurando fecha: {fecha_str}")
+        print(f"2️⃣ Configurando fechas: {fecha_str}")
         driver.execute_script(f"""
             document.getElementById('cddesde').value = '{fecha_str}';
             document.getElementById('cdhasta').value = '{fecha_str}';
         """)
         time.sleep(1)
         
+        print(f"3️⃣ Configurando checkbox extraordinaria: {es_extraordinaria}")
         if es_extraordinaria:
-            print("3️⃣ Marcando EXTRAORDINARIA...")
             driver.execute_script("document.getElementById('tipo').checked = true;")
         else:
-            print("3️⃣ Modo ORDINARIA...")
             driver.execute_script("document.getElementById('tipo').checked = false;")
         
         time.sleep(1)
         
         print("4️⃣ Ejecutando búsqueda...")
         driver.execute_script("document.getElementById('btnBuscar').click();")
-        time.sleep(8)
+        time.sleep(10)
         
-        # Scroll con detección de estabilidad
-        print(f"5️⃣ Cargando contenido (máx {max_scrolls} scrolls)...")
+        # CORRECCIÓN: SCROLL CON DETECCIÓN DE ESTABILIDAD (igual que VS Code)
+        print("5️⃣ Cargando contenido con scroll inteligente...")
         last_count = -1
         stable = 0
+        max_scrolls = 40
         
         for i in range(max_scrolls):
             driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(1.2)
+            time.sleep(1.2)  # Mismo timing que VS Code
             
-            html = driver.page_source
-            soup = BeautifulSoup(html, "html.parser")
+            # CORRECCIÓN: SELECTOR ESPECÍFICO DE ARTÍCULOS (igual que VS Code)
+            soup = BeautifulSoup(driver.page_source, "html.parser")
             articles = soup.find_all("article", class_=lambda c: c and "edicionesoficiales_articulos" in c)
             count = len(articles)
             
-            print(f"   Scroll {i+1}/{max_scrolls}: {count} artículos detectados")
+            print(f"   Scroll {i+1}/{max_scrolls}: {count} artículos")
             
+            # Detectar estabilidad (igual que VS Code)
             if count == last_count:
                 stable += 1
             else:
@@ -433,43 +402,47 @@ def extraer_normas_el_peruano(driver, fecha_obj, es_extraordinaria=False, max_sc
                 print("   ✅ Contenido estable, finalizando scroll")
                 break
         
-        print("6️⃣ Parseando artículos...")
-        html = driver.page_source
-        soup = BeautifulSoup(html, "html.parser")
+        print("6️⃣ Parseando HTML final...")
+        soup = BeautifulSoup(driver.page_source, "html.parser")
         articles = soup.find_all("article", class_=lambda c: c and "edicionesoficiales_articulos" in c)
         
+        print(f"   📄 TOTAL ARTÍCULOS: {len(articles)}")
+        
         if not articles:
-            print("   ⚠️ No se encontraron artículos")
+            print("   ⚠️ NO SE ENCONTRARON ARTÍCULOS")
             return []
         
-        print(f"   📄 {len(articles)} artículos encontrados")
-        
-        # Procesar artículos
+        print("7️⃣ Extrayendo datos de artículos...")
         candidatos = []
+        
         for idx, art in enumerate(articles, 1):
             try:
-                # Sector
+                # Extraer sector (igual que VS Code)
+                sector = ""
                 sector_tag = art.find("h4")
-                sector = sector_tag.get_text(" ", strip=True) if sector_tag else ""
+                if sector_tag:
+                    sector = sector_tag.get_text(" ", strip=True)
                 
-                # Título
+                # Extraer título (igual que VS Code)
+                titulo = ""
                 titulo_tag = art.find("h5")
-                link_tag = titulo_tag.find("a") if titulo_tag else None
-                titulo = link_tag.get_text(" ", strip=True) if link_tag else (
-                    titulo_tag.get_text(" ", strip=True) if titulo_tag else ""
-                )
+                if titulo_tag:
+                    link = titulo_tag.find("a")
+                    titulo = link.get_text(" ", strip=True) if link else titulo_tag.get_text(" ", strip=True)
                 
-                # Fecha y sumilla
+                # Extraer fecha y sumilla (igual que VS Code)
                 p_tags = art.find_all("p")
                 fecha_pub = ""
-                if p_tags:
-                    b = p_tags[0].find("b")
-                    if b:
-                        fecha_pub = b.get_text(" ", strip=True).replace("Fecha:", "").strip()
+                sumilla = ""
                 
-                sumilla = p_tags[1].get_text(" ", strip=True) if len(p_tags) >= 2 else ""
+                for p in p_tags:
+                    texto = p.get_text(" ", strip=True)
+                    if "fecha:" in texto.lower():
+                        fecha_pub = texto.replace("Fecha:", "").replace("fecha:", "").strip()
+                    elif len(texto) > 30:
+                        sumilla = texto
                 
-                # PDF URL - EXACTAMENTE COMO VS CODE
+                # CORRECCIÓN: BÚSQUEDA MEJORADA DE PDF URL (igual que VS Code)
                 pdf_url = ""
                 for inp in art.find_all("input"):
                     if inp.has_attr("data-url"):
@@ -480,11 +453,18 @@ def extraer_normas_el_peruano(driver, fecha_obj, es_extraordinaria=False, max_sc
                         if not pdf_url:
                             pdf_url = complete_href(inp['data-url'])
                 
+                # Fallback: buscar en enlaces
+                if not pdf_url:
+                    for a in art.find_all("a", href=True):
+                        if ".pdf" in a['href'].lower():
+                            pdf_url = complete_href(a['href'])
+                            break
+                
                 if not pdf_url:
                     continue
                 
-                # Crear registro - EXACTAMENTE COMO VS CODE
-                texto_completo = " ".join([sector, titulo, sumilla])
+                # CORRECCIÓN: ESTRUCTURA DE DATOS ESTANDARIZADA (igual que VS Code)
+                texto_completo = f"{sector} {titulo} {sumilla}"
                 nombre_archivo = sanitize_filename(titulo or sumilla[:60]) + ".pdf"
                 
                 candidatos.append({
@@ -494,223 +474,252 @@ def extraer_normas_el_peruano(driver, fecha_obj, es_extraordinaria=False, max_sc
                     "Sumilla": sumilla,
                     "pdf_url": pdf_url,
                     "NombreArchivo": nombre_archivo,
-                    "texto_completo": texto_completo,
-                    "TipoEdicion": tipo  # ← CONSISTENTE
+                    "TipoEdicion": tipo_edicion,
+                    "texto_completo": texto_completo
                 })
+                
+                # Debug primer artículo
+                if idx == 1:
+                    print(f"\n   📋 DEBUG PRIMER ARTÍCULO:")
+                    print(f"      Sector: {sector[:60]}")
+                    print(f"      Título: {titulo[:60]}")
+                    print(f"      PDF URL: {pdf_url[:80]}")
+                    print(f"      Tipo: {tipo_edicion}")
                 
             except Exception as e:
                 print(f"   ⚠️ Error en artículo {idx}: {e}")
                 continue
         
-        print(f"7️⃣ Candidatos extraídos: {len(candidatos)}\n")
+        print(f"\n8️⃣ CANDIDATOS EXTRAÍDOS: {len(candidatos)}")
+        print(f"{'='*100}\n")
+        
         return candidatos
         
     except Exception as e:
-        print(f"❌ Error crítico: {e}")
+        print(f"❌ ERROR CRÍTICO: {e}")
         import traceback
         traceback.print_exc()
         return []
 
-def descargar_pdf(url, destino):
-    """IGUAL QUE VS CODE - Descarga PDF local"""
-    try:
-        resp = requests.get(url, timeout=30, stream=True)
-        resp.raise_for_status()
-        with open(destino, 'wb') as f:
-            for chunk in resp.iter_content(8192):
-                f.write(chunk)
-        return True
-    except Exception as e:
-        print(f"   ❌ Error descargando: {e}")
-        return False
-
 # =============================================================================
-# MAIN - EXACTAMENTE COMO VS CODE
+# MAIN
 # =============================================================================
 
 def main():
-    print("\n" + "="*80)
+    print("\n" + "="*100)
     print("🚀 INICIANDO PROCESO PRINCIPAL")
-    print("="*80)
+    print("="*100)
     
-    # Conectar a Drive
+    # DRIVE
     print("\n📁 PASO 1: CONECTAR A GOOGLE DRIVE")
     drive_client = GoogleDriveClient(CREDENTIALS_JSON)
     
-    # Cargar corpus
-    print("\n🧠 PASO 2: CARGAR CORPUS")
+    # CORPUS
+    print("\n🧠 PASO 2: CARGAR CORPUS DE APRENDIZAJE")
     corpus_file_id = drive_client.get_file_by_name(DRIVE_FOLDER_ID, 'corpus_hidrocarburos.txt')
     
     if corpus_file_id:
+        print(f"   ✅ Corpus encontrado, descargando...")
         texto_base = drive_client.download_text_file(corpus_file_id)
     else:
-        print("   📝 Creando corpus inicial...")
+        print("   📝 Corpus NO existe, creando inicial...")
         texto_base = " ".join(KEYWORDS_MANUAL * 3)
         drive_client.upload_text_file(DRIVE_FOLDER_ID, 'corpus_hidrocarburos.txt', texto_base)
     
-    if not texto_base.strip():
-        texto_base = " ".join(KEYWORDS_MANUAL * 3)
+    # VECTORIZADOR
+    print("\n🤖 PASO 3: INICIALIZAR VECTORIZADOR TF-IDF")
+    vectorizador = TfidfVectorizer(lowercase=True, ngram_range=(1,2), max_features=2000)
+    vectorizador.fit([texto_base])
+    X_base = vectorizador.transform([texto_base])
+    print(f"   ✅ Vocabulario: {len(vectorizador.vocabulary_)} términos")
     
-    # Vectorizador
-    print("\n🤖 PASO 3: INICIALIZAR VECTORIZADOR")
-    vec_global = TfidfVectorizer(lowercase=True, ngram_range=(1,2), max_features=5000)
-    vec_global.fit([texto_base])
-    X_base = vec_global.transform([texto_base])
-    print(f"   ✅ Vocabulario: {len(vec_global.vocabulary_)} términos")
+    # CORRECCIÓN: FECHAS CORRECTAS (igual que VS Code)
+    print("\n📅 PASO 4: GENERAR FECHAS A REVISAR")
+    fechas_a_procesar = []
     
-    # Crear driver
-    print("\n🌐 PASO 4: INICIAR NAVEGADOR")
+    # Generar pares (fecha, es_extraordinaria)
+    # Los lunes: revisa viernes, sábado, domingo (ordinarias) + jueves, viernes, sábado (extraordinarias)
+    # Otros días: revisa hoy (ordinaria) + ayer (extraordinaria)
+    
+    if DIA_SEMANA == 0:  # Lunes
+        print("   📅 ES LUNES - Revisando múltiples días:")
+        # Ordinarias: viernes(-3), sábado(-2), domingo(-1)
+        for dias_atras in range(3, 0, -1):
+            fecha = HOY - timedelta(days=dias_atras)
+            fechas_a_procesar.append((fecha, False))
+            print(f"      • Ordinaria: {fecha.strftime('%d/%m/%Y')}")
+        
+        # Extraordinarias: jueves(-4), viernes(-3), sábado(-2)
+        for dias_atras in range(4, 1, -1):
+            fecha = HOY - timedelta(days=dias_atras)
+            fechas_a_procesar.append((fecha, True))
+            print(f"      • Extraordinaria: {fecha.strftime('%d/%m/%Y')}")
+    else:  # Martes a domingo
+        print("   📅 DÍA NORMAL - Revisando hoy y ayer:")
+        # Ordinaria de hoy
+        fechas_a_procesar.append((HOY, False))
+        print(f"      • Ordinaria: {HOY.strftime('%d/%m/%Y')}")
+        
+        # Extraordinaria de ayer
+        ayer = HOY - timedelta(days=1)
+        fechas_a_procesar.append((ayer, True))
+        print(f"      • Extraordinaria: {ayer.strftime('%d/%m/%Y')}")
+    
+    # SELENIUM
+    print("\n🌐 PASO 5: INICIAR NAVEGADOR")
     driver = crear_driver()
-    print("   ✅ Navegador listo")
+    print("   ✅ Navegador iniciado")
     
-    # EXTRACCIÓN - EXACTAMENTE COMO VS CODE
-    print("\n📰 PASO 5: EXTRAER NORMAS")
+    # EXTRAER
+    print("\n📰 PASO 6: EXTRAER NORMAS")
+    todos_candidatos = []
     
-    print("\n📋 5.A - EXTRAYENDO ORDINARIAS DE HOY:")
-    candidatos_hoy = extraer_normas_el_peruano(driver, HOY, es_extraordinaria=False, max_scrolls=40)
-    
-    time.sleep(3)
-    
-    print("\n📋 5.B - EXTRAYENDO EXTRAORDINARIAS DE AYER:")
-    candidatos_ayer = extraer_normas_el_peruano(driver, AYER, es_extraordinaria=True, max_scrolls=40)
+    for i, (fecha, es_ext) in enumerate(fechas_a_procesar, 1):
+        tipo = "EXTRAORDINARIA" if es_ext else "ORDINARIA"
+        print(f"\n📋 6.{i} - EXTRAYENDO {tipo} DEL {fecha.strftime('%d/%m/%Y')}:")
+        candidatos = extraer_normas(driver, fecha, es_extraordinaria=es_ext)
+        print(f"   ✅ Extraídos: {len(candidatos)} candidatos")
+        todos_candidatos.extend(candidatos)
+        time.sleep(3)
     
     driver.quit()
     print("\n✅ Navegador cerrado")
     
-    # Combinar todos los candidatos
-    todos_candidatos = candidatos_hoy + candidatos_ayer
+    # DEDUPLICAR
+    print("\n🔄 PASO 7: DEDUPLICAR")
+    vistos = set()
+    candidatos_unicos = []
     
-    print(f"\n{'='*80}")
-    print(f"📊 RESUMEN EXTRACCIÓN")
-    print(f"{'='*80}")
-    print(f"✅ Ordinarias (HOY): {len(candidatos_hoy)}")
-    print(f"✅ Extraordinarias (AYER): {len(candidatos_ayer)}")
-    print(f"✅ TOTAL: {len(todos_candidatos)}")
-    print(f"{'='*80}\n")
+    for c in todos_candidatos:
+        key = (c['titulo'].strip().lower(), c.get('FechaPublicacion', ''))
+        if key not in vistos and key[0]:
+            vistos.add(key)
+            candidatos_unicos.append(c)
+    
+    print(f"   Total extraído: {len(todos_candidatos)}")
+    print(f"   ✅ Únicos: {len(candidatos_unicos)}")
     
     # FILTRAR
-    print("🔬 PASO 6: FILTRAR RELEVANCIA")
+    print("\n🔬 PASO 8: FILTRAR RELEVANCIA")
     aceptados = []
-    rechazados = 0
+    prioritarios = []
     
-    for i, c in enumerate(todos_candidatos, 1):
-        texto = c.get("texto_completo", "")
-        relevante, info = evaluar_relevancia(texto, vec_global, X_base, texto_base)
+    for i, c in enumerate(candidatos_unicos, 1):
+        es_prioritario, sector_match = es_sector_prioritario(c['sector'])
         
-        if relevante:
+        if es_prioritario:
             aceptados.append(c)
-            print(f"[{i}/{len(todos_candidatos)}] ✅ ACEPTA: {c.get('titulo', '')[:60]}")
+            prioritarios.append(c)
+            print(f"   [{i}/{len(candidatos_unicos)}] ⭐ PRIORITARIO: {c['titulo'][:50]}")
         else:
-            rechazados += 1
+            relevante, razon = evaluar_relevancia(c['texto_completo'], vectorizador, X_base)
+            if relevante:
+                aceptados.append(c)
+                print(f"   [{i}/{len(candidatos_unicos)}] ✅ RELEVANTE: {c['titulo'][:50]}")
     
-    print(f"\n✅ Aceptadas: {len(aceptados)}")
-    print(f"⏭️ Rechazadas: {rechazados}\n")
+    print(f"\n✅ TOTAL ACEPTADOS: {len(aceptados)}")
     
-    # DESCARGAR PDFs LOCALMENTE (como VS Code)
-    if aceptados:
-        print("📥 PASO 7: DESCARGAR PDFs LOCALMENTE")
-        exitosos = 0
-        fallidos = 0
-        
-        for i, norma in enumerate(aceptados, 1):
-            try:
-                nombre = norma.get("NombreArchivo", "")
-                destino = os.path.join(CARPETA_DIA, nombre)
-                
-                if os.path.exists(destino):
-                    print(f"[{i}/{len(aceptados)}] ⏭️ Ya existe: {nombre[:50]}")
-                    exitosos += 1
-                    continue
-                
-                url = norma.get("pdf_url", "")
-                print(f"[{i}/{len(aceptados)}] ⬇️ Descargando: {nombre[:50]}...")
-                
-                if descargar_pdf(url, destino):
-                    exitosos += 1
-                    norma['pdf_local'] = destino  # Guardar ruta local
-                    print(f"   ✅ Completado")
-                else:
-                    fallidos += 1
-                
-                time.sleep(1)
-                
-            except Exception as e:
-                fallidos += 1
-                print(f"   ❌ Error: {e}")
-        
-        print(f"\n✅ Exitosas: {exitosos}")
-        print(f"❌ Fallidas: {fallidos}\n")
-    
-    # SUBIR PDFs A DRIVE (opcional)
+    # DESCARGAR PDFs
     folder_id = None
     if aceptados:
-        print("📤 PASO 8: SUBIR PDFs A DRIVE")
+        print("\n📥 PASO 9: DESCARGAR PDFs")
         folder_name = HOY.strftime("%Y-%m-%d")
         folder_id = drive_client.create_folder(DRIVE_FOLDER_ID, folder_name)
         
         if folder_id:
+            print(f"   ✅ Carpeta lista: {folder_name}")
+            
             for i, norma in enumerate(aceptados, 1):
-                if 'pdf_local' in norma and os.path.exists(norma['pdf_local']):
-                    print(f"[{i}/{len(aceptados)}] 📤 Subiendo: {norma['NombreArchivo'][:50]}...")
-                    link = drive_client.upload_pdf(folder_id, norma['NombreArchivo'], norma['pdf_local'])
-                    norma['EnlacePDF'] = link if link else norma['pdf_url']
-                else:
-                    norma['EnlacePDF'] = norma['pdf_url']
+                try:
+                    print(f"\n   [{i}/{len(aceptados)}] Procesando: {norma['titulo'][:40]}...")
+                    
+                    # CORRECCIÓN: DESCARGA MEJORADA CON STREAM (igual que VS Code)
+                    response = requests.get(norma['pdf_url'], timeout=30, stream=True)
+                    print(f"      HTTP Status: {response.status_code}")
+                    
+                    if response.status_code == 200:
+                        content_type = response.headers.get('content-type', '')
+                        
+                        # Verificar que es PDF
+                        if 'pdf' in content_type.lower() or len(response.content) > 1000:
+                            filename = norma['NombreArchivo']
+                            
+                            # Subir a Drive
+                            link = drive_client.upload_pdf(folder_id, filename, response.content)
+                            norma['drive_link'] = link if link else norma['pdf_url']
+                        else:
+                            print(f"      ⚠️ No es PDF válido")
+                            norma['drive_link'] = norma['pdf_url']
+                    else:
+                        print(f"      ❌ HTTP {response.status_code}")
+                        norma['drive_link'] = norma['pdf_url']
+                        
+                except Exception as e:
+                    print(f"      ❌ Error: {e}")
+                    norma['drive_link'] = norma['pdf_url']
     
-    # ACTUALIZAR SHEETS
+    # Google Sheets - CORRECCIÓN: USAR NOMBRES CORRECTOS (igual que VS Code)
     if aceptados:
-        print("\n📊 PASO 9: ACTUALIZAR GOOGLE SHEETS")
+        print("\n📊 Actualizando Google Sheets...")
         rows = []
         for norma in aceptados:
             rows.append([
                 HOY.strftime("%Y-%m-%d"),
-                norma.get('titulo', ''),
+                norma['titulo'],
                 norma.get('FechaPublicacion', ''),
                 norma.get('Sumilla', ''),
-                norma.get('EnlacePDF', norma.get('pdf_url', '')),
+                norma.get('drive_link', ''),
                 norma.get('TipoEdicion', '')
             ])
         drive_client.append_to_sheet(SPREADSHEET_ID, 'A:F', rows)
+        print(f"   ✅ {len(rows)} filas agregadas")
     
-    # ACTUALIZAR CORPUS
+    # Actualizar corpus
     if aceptados:
-        print("\n🧠 PASO 10: ACTUALIZAR CORPUS")
+        print("\n🧠 Actualizando corpus...")
         nuevo_contenido = "\n".join([n['texto_completo'] for n in aceptados])
         corpus_actualizado = texto_base + "\n" + nuevo_contenido
         drive_client.upload_text_file(DRIVE_FOLDER_ID, 'corpus_hidrocarburos.txt', corpus_actualizado)
     
-    # TELEGRAM
-    print("\n💬 PASO 11: ENVIAR TELEGRAM")
+    # Telegram - CORRECCIÓN: Lógica correcta de mensajes
     if aceptados:
-        mensaje = f"Buen día equipo, se envía la revisión de normas relevantes al sector {HOY.strftime('%d/%m/%y')}\n\n"
+        if DIA_SEMANA == 0:
+            # Lunes: mostrar rango de fechas
+            fecha_inicio = (HOY - timedelta(days=3)).strftime('%d/%m/%y')
+            fecha_fin = HOY.strftime('%d/%m/%y')
+            mensaje = f"Buen día equipo, se envía la revisión de normas relevantes al sector del {fecha_inicio} al {fecha_fin}\n\n"
+        else:
+            # Otros días: mostrar fecha de hoy
+            mensaje = f"Buen día equipo, se envía la revisión de normas relevantes al sector {HOY.strftime('%d/%m/%y')}\n\n"
         
         for norma in aceptados:
+            # Agregar etiqueta de extraordinaria si aplica
             tipo_etiqueta = ""
-            if str(norma.get('TipoEdicion', '')).strip() == "Extraordinaria":
+            if str(norma.get('TipoEdicion', '')).strip().lower() == "extraordinaria":
                 tipo_etiqueta = " (Extraordinaria)"
             
             mensaje += f"<b>{norma['titulo']}{tipo_etiqueta}</b>\n"
             mensaje += f"{norma.get('Sumilla', '')}\n\n"
     else:
-        mensaje = f"Buen día equipo, el día de hoy no se encontraron normas relevantes del sector.\n\n📅 Extraordinaria {AYER.strftime('%d/%m/%y')}\n📅 Ordinaria {HOY.strftime('%d/%m/%y')}"
+        if DIA_SEMANA == 0:
+            fecha_inicio = (HOY - timedelta(days=3)).strftime('%d/%m/%y')
+            fecha_fin = HOY.strftime('%d/%m/%y')
+            mensaje = f"Buen día equipo, el día de hoy no se encontraron normas relevantes del sector.\n\n📅 Periodo revisado: del {fecha_inicio} al {fecha_fin}"
+        else:
+            ayer = HOY - timedelta(days=1)
+            mensaje = f"Buen día equipo, el día de hoy no se encontraron normas relevantes del sector.\n\n📅 Extraordinaria {ayer.strftime('%d/%m/%y')}\n📅 Ordinaria {HOY.strftime('%d/%m/%y')}"
     
+    print("\n💬 Enviando Telegram...")
     enviar_telegram(mensaje, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
     
-    # RESUMEN FINAL
+    # Resumen final
     print("\n" + "="*80)
     print("🎉 PROCESO COMPLETADO")
     print("="*80)
     print(f"✅ Normas procesadas: {len(aceptados)}")
-    print(f"📁 PDFs locales: {CARPETA_DIA}")
-    if folder_id:
+    if aceptados:
         print(f"📁 Carpeta Drive: {folder_name}")
     print("="*80)
-    
-    # Mostrar normas
-    if aceptados:
-        print(f"\n📋 NORMAS ACEPTADAS ({len(aceptados)}):")
-        for i, norma in enumerate(aceptados, 1):
-            print(f"{i}. [{norma['TipoEdicion']}] {norma['titulo'][:70]}")
 
 if __name__ == "__main__":
     try:
