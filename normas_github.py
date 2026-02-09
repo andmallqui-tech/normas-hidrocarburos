@@ -1,6 +1,6 @@
 """
 =============================================================================
-SISTEMA AUTOMATIZADO DE NORMAS - VERSIÓN DEBUG EXTREMO
+SISTEMA AUTOMATIZADO DE NORMAS - VERSIÓN CORREGIDA
 =============================================================================
 """
 
@@ -33,7 +33,7 @@ from googleapiclient.http import MediaIoBaseUpload, MediaIoBaseDownload
 # =============================================================================
 
 print("="*100)
-print("🚀 SISTEMA DE NORMAS - DEBUG EXTREMO")
+print("🚀 SISTEMA DE NORMAS - VERSIÓN CORREGIDA")
 print("="*100)
 
 HOY = date.today()
@@ -101,8 +101,6 @@ class GoogleDriveClient:
             print(f"      📊 Líneas: {lineas}")
             print(f"      📋 PRIMEROS 300 CARACTERES:")
             print(f"      {content[:300]}...")
-            print(f"      📋 ÚLTIMOS 200 CARACTERES:")
-            print(f"      ...{content[-200:]}")
             
             return content
         except Exception as e:
@@ -125,7 +123,6 @@ class GoogleDriveClient:
                 file = self.drive_service.files().create(body=file_metadata, media_body=media, fields='id').execute()
                 print(f"   ✅ CORPUS CREADO EN DRIVE (ID: {file.get('id')})")
             
-            print(f"   📋 Primeros 200 chars guardados: {content[:200]}...")
             return True
         except Exception as e:
             print(f"   ❌ Error subiendo: {e}")
@@ -293,7 +290,7 @@ def evaluar_relevancia(texto_candidato, vectorizador, X_base):
     return relevante, razon
 
 # =============================================================================
-# SELENIUM
+# SELENIUM - FUNCIONES AUXILIARES
 # =============================================================================
 
 def crear_driver():
@@ -308,14 +305,38 @@ def crear_driver():
     driver.set_page_load_timeout(90)
     return driver
 
+def complete_href(href):
+    """Completa URL relativa a absoluta - FUNCIÓN CRÍTICA"""
+    if not href:
+        return None
+    href = href.strip()
+    if href.startswith("//"):
+        return "https:" + href
+    if href.startswith("/"):
+        return "https://diariooficial.elperuano.pe" + href
+    if href.startswith("http"):
+        return href
+    return "https://diariooficial.elperuano.pe/" + href.lstrip("./")
+
+def sanitize_filename(nombre):
+    """Limpia nombre para usar como archivo"""
+    nombre = re.sub(r'[<>:"/\\|?*\n\r\t]', '', nombre)
+    nombre = re.sub(r'\s+', '_', nombre.strip())
+    return nombre[:150]
+
+# =============================================================================
+# SELENIUM - EXTRACCIÓN PRINCIPAL (CORREGIDA)
+# =============================================================================
+
 def extraer_normas(driver, fecha_obj, es_extraordinaria=False):
-    # FORZAR EL TIPO CORRECTAMENTE
+    """
+    FUNCIÓN CORREGIDA - Extrae normas con todas las correcciones aplicadas
+    """
     tipo_edicion = "Extraordinaria" if es_extraordinaria else "Ordinaria"
     fecha_str = fecha_obj.strftime("%d/%m/%Y")
     
     print(f"\n{'='*100}")
     print(f"🔍 EXTRAYENDO: {tipo_edicion} del {fecha_str}")
-    print(f"   📌 TIPO ASIGNADO: '{tipo_edicion}'")
     print(f"{'='*100}")
     
     try:
@@ -336,42 +357,48 @@ def extraer_normas(driver, fecha_obj, es_extraordinaria=False):
         else:
             driver.execute_script("document.getElementById('tipo').checked = false;")
         
-        checked = driver.execute_script("return document.getElementById('tipo').checked;")
-        print(f"   ✅ Checkbox estado: {checked} (esperado: {es_extraordinaria})")
-        
-        if checked != es_extraordinaria:
-            print(f"   ⚠️ ADVERTENCIA: Checkbox no coincide! Reintentando...")
-            time.sleep(2)
-            if es_extraordinaria:
-                driver.execute_script("document.getElementById('tipo').checked = true;")
-            else:
-                driver.execute_script("document.getElementById('tipo').checked = false;")
-            checked = driver.execute_script("return document.getElementById('tipo').checked;")
-            print(f"   ✅ Segundo intento: {checked}")
+        time.sleep(1)
         
         print("4️⃣ Ejecutando búsqueda...")
         driver.execute_script("document.getElementById('btnBuscar').click();")
         time.sleep(10)
         
-        print("5️⃣ Cargando contenido con scroll...")
-        for i in range(35):
-            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-            time.sleep(1.5)
-            if i % 10 == 0:
-                soup = BeautifulSoup(driver.page_source, "html.parser")
-                articles = soup.find_all("article")
-                print(f"   Scroll {i+1}/35: {len(articles)} artículos")
+        # CORRECCIÓN 1: SCROLL CON DETECCIÓN DE ESTABILIDAD
+        print("5️⃣ Cargando contenido con scroll inteligente...")
+        last_count = -1
+        stable = 0
+        max_scrolls = 40
         
-        print("6️⃣ Parseando HTML...")
+        for i in range(max_scrolls):
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(1.2)
+            
+            # CORRECCIÓN 2: SELECTOR ESPECÍFICO DE ARTÍCULOS
+            soup = BeautifulSoup(driver.page_source, "html.parser")
+            articles = soup.find_all("article", class_=lambda c: c and "edicionesoficiales_articulos" in c)
+            count = len(articles)
+            
+            print(f"   Scroll {i+1}/{max_scrolls}: {count} artículos")
+            
+            # Detectar estabilidad
+            if count == last_count:
+                stable += 1
+            else:
+                stable = 0
+                last_count = count
+            
+            if stable >= 3:
+                print("   ✅ Contenido estable, finalizando scroll")
+                break
+        
+        print("6️⃣ Parseando HTML final...")
         soup = BeautifulSoup(driver.page_source, "html.parser")
-        articles = soup.find_all("article")
+        articles = soup.find_all("article", class_=lambda c: c and "edicionesoficiales_articulos" in c)
         
         print(f"   📄 TOTAL ARTÍCULOS: {len(articles)}")
         
         if not articles:
-            print("   ⚠️ NO SE ENCONTRARON ARTÍCULOS - Guardando HTML...")
-            with open(f"debug_{tipo_edicion}_{fecha_str.replace('/', '-')}.html", 'w', encoding='utf-8') as f:
-                f.write(driver.page_source)
+            print("   ⚠️ NO SE ENCONTRARON ARTÍCULOS")
             return []
         
         print("7️⃣ Extrayendo datos de artículos...")
@@ -379,17 +406,20 @@ def extraer_normas(driver, fecha_obj, es_extraordinaria=False):
         
         for idx, art in enumerate(articles, 1):
             try:
+                # Extraer sector
                 sector = ""
                 sector_tag = art.find("h4")
                 if sector_tag:
                     sector = sector_tag.get_text(" ", strip=True)
                 
+                # Extraer título
                 titulo = ""
                 titulo_tag = art.find("h5")
                 if titulo_tag:
                     link = titulo_tag.find("a")
                     titulo = link.get_text(" ", strip=True) if link else titulo_tag.get_text(" ", strip=True)
                 
+                # Extraer fecha y sumilla
                 p_tags = art.find_all("p")
                 fecha_pub = ""
                 sumilla = ""
@@ -401,62 +431,57 @@ def extraer_normas(driver, fecha_obj, es_extraordinaria=False):
                     elif len(texto) > 30:
                         sumilla = texto
                 
+                # CORRECCIÓN 3: BÚSQUEDA MEJORADA DE PDF URL
                 pdf_url = ""
                 for inp in art.find_all("input"):
                     if inp.has_attr("data-url"):
-                        url = inp['data-url']
-                        if url.startswith("//"):
-                            pdf_url = "https:" + url
-                        elif url.startswith("/"):
-                            pdf_url = "https://diariooficial.elperuano.pe" + url
-                        elif url.startswith("http"):
-                            pdf_url = url
-                        else:
-                            pdf_url = "https://diariooficial.elperuano.pe/" + url.lstrip("./")
-                        break
+                        # Verificar el valor del input (crítico)
+                        val = (inp.get("value", "") or "").lower()
+                        if "descarga individual" in val or "descarga" in val:
+                            pdf_url = complete_href(inp['data-url'])
+                            break
+                        # Si no tiene valor específico, usar como fallback
+                        if not pdf_url:
+                            pdf_url = complete_href(inp['data-url'])
                 
+                # Fallback: buscar en enlaces
                 if not pdf_url:
                     for a in art.find_all("a", href=True):
                         if ".pdf" in a['href'].lower():
-                            href = a['href']
-                            if href.startswith("//"):
-                                pdf_url = "https:" + href
-                            elif href.startswith("/"):
-                                pdf_url = "https://diariooficial.elperuano.pe" + href
-                            elif href.startswith("http"):
-                                pdf_url = href
+                            pdf_url = complete_href(a['href'])
                             break
                 
                 if not pdf_url:
                     continue
                 
-                # DEBUG PRIMER ARTÍCULO
-                if idx == 1:
-                    print(f"\n   📋 DEBUG PRIMER ARTÍCULO:")
-                    print(f"      Sector: {sector[:60]}")
-                    print(f"      Título: {titulo[:60]}")
-                    print(f"      Fecha pub: {fecha_pub}")
-                    print(f"      Sumilla: {sumilla[:60]}")
-                    print(f"      PDF URL: {pdf_url[:80]}")
-                    print(f"      TIPO ASIGNADO: '{tipo_edicion}'")
+                # CORRECCIÓN 4: ESTRUCTURA DE DATOS ESTANDARIZADA
+                texto_completo = f"{sector} {titulo} {sumilla}"
+                nombre_archivo = sanitize_filename(titulo or sumilla[:60]) + ".pdf"
                 
                 candidatos.append({
                     "sector": sector,
                     "titulo": titulo,
-                    "fecha_pub": fecha_pub,
-                    "fecha_busqueda": fecha_str,
-                    "sumilla": sumilla,
+                    "FechaPublicacion": fecha_pub,  # ← Nombre correcto
+                    "Sumilla": sumilla,              # ← Nombre correcto
                     "pdf_url": pdf_url,
-                    "tipo": tipo_edicion,  # ASIGNACIÓN EXPLÍCITA
-                    "texto_completo": f"{sector} {titulo} {sumilla}"
+                    "NombreArchivo": nombre_archivo, # ← Campo agregado
+                    "TipoEdicion": tipo_edicion,     # ← Nombre correcto
+                    "texto_completo": texto_completo
                 })
+                
+                # Debug primer artículo
+                if idx == 1:
+                    print(f"\n   📋 DEBUG PRIMER ARTÍCULO:")
+                    print(f"      Sector: {sector[:60]}")
+                    print(f"      Título: {titulo[:60]}")
+                    print(f"      PDF URL: {pdf_url[:80]}")
+                    print(f"      Tipo: {tipo_edicion}")
                 
             except Exception as e:
                 print(f"   ⚠️ Error en artículo {idx}: {e}")
                 continue
         
         print(f"\n8️⃣ CANDIDATOS EXTRAÍDOS: {len(candidatos)}")
-        print(f"   📌 TODOS CON TIPO: '{tipo_edicion}'")
         print(f"{'='*100}\n")
         
         return candidatos
@@ -491,7 +516,6 @@ def main():
         print("   📝 Corpus NO existe, creando inicial...")
         texto_base = " ".join(KEYWORDS_MANUAL * 3)
         drive_client.upload_text_file(DRIVE_FOLDER_ID, 'corpus_hidrocarburos.txt', texto_base)
-        print(f"   ✅ Corpus inicial creado con {len(texto_base.split())} palabras")
     
     # VECTORIZADOR
     print("\n🤖 PASO 3: INICIALIZAR VECTORIZADOR TF-IDF")
@@ -538,29 +562,18 @@ def main():
     driver.quit()
     print("\n✅ Navegador cerrado")
     
-    # VERIFICAR TIPOS
-    print("\n🔍 VERIFICACIÓN DE TIPOS EXTRAÍDOS:")
-    tipos_count = {}
-    for c in todos_candidatos:
-        tipo = c.get('tipo', 'UNDEFINED')
-        tipos_count[tipo] = tipos_count.get(tipo, 0) + 1
-    
-    for tipo, count in tipos_count.items():
-        print(f"   {tipo}: {count} normas")
-    
     # DEDUPLICAR
     print("\n🔄 PASO 7: DEDUPLICAR")
     vistos = set()
     candidatos_unicos = []
     
     for c in todos_candidatos:
-        key = (c['titulo'].strip().lower(), c.get('fecha_pub', ''))
+        key = (c['titulo'].strip().lower(), c.get('FechaPublicacion', ''))
         if key not in vistos and key[0]:
             vistos.add(key)
             candidatos_unicos.append(c)
     
     print(f"   Total extraído: {len(todos_candidatos)}")
-    print(f"   Duplicados: {len(todos_candidatos) - len(candidatos_unicos)}")
     print(f"   ✅ Únicos: {len(candidatos_unicos)}")
     
     # FILTRAR
@@ -574,26 +587,14 @@ def main():
         if es_prioritario:
             aceptados.append(c)
             prioritarios.append(c)
-            print(f"   [{i}/{len(candidatos_unicos)}] ⭐ PRIORITARIO: {c['titulo'][:50]} | TIPO: {c['tipo']}")
+            print(f"   [{i}/{len(candidatos_unicos)}] ⭐ PRIORITARIO: {c['titulo'][:50]}")
         else:
             relevante, razon = evaluar_relevancia(c['texto_completo'], vectorizador, X_base)
             if relevante:
                 aceptados.append(c)
-                print(f"   [{i}/{len(candidatos_unicos)}] ✅ RELEVANTE: {c['titulo'][:50]} | TIPO: {c['tipo']}")
+                print(f"   [{i}/{len(candidatos_unicos)}] ✅ RELEVANTE: {c['titulo'][:50]}")
     
     print(f"\n✅ TOTAL ACEPTADOS: {len(aceptados)}")
-    print(f"   ⭐ Prioritarios: {len(prioritarios)}")
-    print(f"   🔍 Por filtro: {len(aceptados) - len(prioritarios)}")
-    
-    # VERIFICAR TIPOS EN ACEPTADOS
-    print("\n🔍 VERIFICACIÓN DE TIPOS EN ACEPTADOS:")
-    tipos_aceptados = {}
-    for a in aceptados:
-        tipo = a.get('tipo', 'UNDEFINED')
-        tipos_aceptados[tipo] = tipos_aceptados.get(tipo, 0) + 1
-    
-    for tipo, count in tipos_aceptados.items():
-        print(f"   {tipo}: {count} normas")
     
     # DESCARGAR PDFs
     folder_id = None
@@ -603,25 +604,25 @@ def main():
         folder_id = drive_client.create_folder(DRIVE_FOLDER_ID, folder_name)
         
         if folder_id:
-            print(f"   ✅ Carpeta lista: {folder_name} (ID: {folder_id})")
+            print(f"   ✅ Carpeta lista: {folder_name}")
             
             for i, norma in enumerate(aceptados, 1):
                 try:
                     print(f"\n   [{i}/{len(aceptados)}] Procesando: {norma['titulo'][:40]}...")
-                    print(f"      TIPO: {norma['tipo']}")
-                    print(f"      URL: {norma['pdf_url'][:70]}")
                     
-                    response = requests.get(norma['pdf_url'], timeout=30)
+                    # CORRECCIÓN 5: DESCARGA MEJORADA CON STREAM
+                    response = requests.get(norma['pdf_url'], timeout=30, stream=True)
                     print(f"      HTTP Status: {response.status_code}")
                     
                     if response.status_code == 200:
                         content_type = response.headers.get('content-type', '')
-                        print(f"      Content-Type: {content_type}")
                         
+                        # Verificar que es PDF
                         if 'pdf' in content_type.lower() or len(response.content) > 1000:
-                            filename = re.sub(r'[^\w\s-]', '', norma['titulo'][:100])
-                            filename = re.sub(r'\s+', '_', filename) + '.pdf'
+                            # Usar el nombre de archivo ya generado
+                            filename = norma['NombreArchivo']
                             
+                            # Subir a Drive
                             link = drive_client.upload_pdf(folder_id, filename, response.content)
                             norma['drive_link'] = link if link else norma['pdf_url']
                         else:
@@ -635,7 +636,7 @@ def main():
                     print(f"      ❌ Error: {e}")
                     norma['drive_link'] = norma['pdf_url']
     
-    # Google Sheets
+    # Google Sheets - CORRECCIÓN 6: USAR NOMBRES CORRECTOS
     if aceptados:
         print("\n📊 Actualizando Google Sheets...")
         rows = []
@@ -643,10 +644,10 @@ def main():
             rows.append([
                 HOY.strftime("%Y-%m-%d"),
                 norma['titulo'],
-                norma.get('fecha_pub', ''),
-                norma['sumilla'],
+                norma.get('FechaPublicacion', ''),  # ← Clave corregida
+                norma.get('Sumilla', ''),           # ← Clave corregida
                 norma.get('drive_link', ''),
-                norma['tipo']
+                norma.get('TipoEdicion', '')        # ← Clave corregida
             ])
         drive_client.append_to_sheet(SPREADSHEET_ID, 'A:F', rows)
         print(f"   ✅ {len(rows)} filas agregadas")
@@ -667,32 +668,21 @@ def main():
         else:
             mensaje = f"Buen día equipo, se envía la revisión de normas relevantes al sector {HOY.strftime('%d/%m/%y')}\n\n"
         
-        print("\n📱 Generando mensaje Telegram...")
         for norma in aceptados:
             tipo_etiqueta = ""
-            if str(norma.get('tipo', '')).strip().lower() == "extraordinaria":
+            if str(norma.get('TipoEdicion', '')).strip().lower() == "extraordinaria":
                 tipo_etiqueta = " (Extraordinaria)"
             
             mensaje += f"<b>{norma['titulo']}{tipo_etiqueta}</b>\n"
-            mensaje += f"{norma['sumilla']}\n\n"
+            mensaje += f"{norma.get('Sumilla', '')}\n\n"
     else:
         if DIA_SEMANA == 0:
             fecha_inicio = fechas_ordinarias[-1].strftime('%d/%m/%y')
             fecha_fin = HOY.strftime('%d/%m/%y')
-            mensaje = (
-                f"Buen día equipo, el día de hoy no se encontraron normas relevantes del sector.\n\n"
-                f"📅 Periodo revisado: del {fecha_inicio} al {fecha_fin}\n"
-                f"   • Sábado {fechas_extraordinarias[-1].strftime('%d/%m/%y')} (Extraordinaria)\n"
-                f"   • Domingo {fechas_extraordinarias[-2].strftime('%d/%m/%y')} (Extraordinaria)\n"
-                f"   • Lunes {HOY.strftime('%d/%m/%y')} (Ordinaria)"
-            )
+            mensaje = f"Buen día equipo, el día de hoy no se encontraron normas relevantes del sector.\n\n📅 Periodo revisado: del {fecha_inicio} al {fecha_fin}"
         else:
             ayer = HOY - timedelta(days=1)
-            mensaje = (
-                f"Buen día equipo, el día de hoy no se encontraron normas relevantes del sector.\n\n"
-                f"📅 Extraordinaria {ayer.strftime('%d/%m/%y')}\n"
-                f"📅 Ordinaria {HOY.strftime('%d/%m/%y')}"
-            )
+            mensaje = f"Buen día equipo, el día de hoy no se encontraron normas relevantes del sector.\n\n📅 Extraordinaria {ayer.strftime('%d/%m/%y')}\n📅 Ordinaria {HOY.strftime('%d/%m/%y')}"
     
     print("\n💬 Enviando Telegram...")
     enviar_telegram(mensaje, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
@@ -701,29 +691,10 @@ def main():
     print("\n" + "="*80)
     print("🎉 PROCESO COMPLETADO")
     print("="*80)
-    print(f"📊 Total candidatos extraídos: {len(todos_candidatos)}")
-    print(f"📊 Candidatos únicos: {len(candidatos_unicos)}")
     print(f"✅ Normas procesadas: {len(aceptados)}")
-    print(f"   ⭐ Prioritarias (MINEM/OSINERGMIN): {len(prioritarios)}")
-    print(f"   🔍 Por relevancia: {len(aceptados) - len(prioritarios)}")
     if aceptados:
         print(f"📁 Carpeta Drive: {folder_name}")
-        print(f"📊 Google Sheets: {len(aceptados)} filas agregadas")
-        print(f"🧠 Corpus actualizado con {len(aceptados)} normas nuevas")
-    if DIA_SEMANA == 0:
-        print(f"📅 Modo: LUNES (revisó {DIAS_A_REVISAR} días)")
     print("="*80)
-    
-    # Mostrar detalle de normas aceptadas
-    if aceptados:
-        print(f"\n📋 NORMAS ACEPTADAS ({len(aceptados)}):")
-        print("="*80)
-        for i, norma in enumerate(aceptados, 1):
-            tipo_label = "⭐ PRIORITARIA" if norma in prioritarios else "🔍 FILTRADA"
-            print(f"{i}. [{tipo_label}] [{norma['tipo']}]")
-            print(f"   {norma['titulo'][:70]}")
-            print(f"   Sector: {norma['sector'][:50]}")
-            print()
 
 if __name__ == "__main__":
     try:
