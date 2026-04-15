@@ -2,36 +2,6 @@
 =============================================================================
 SISTEMA AUTOMATIZADO DE NORMAS - VERSIÓN FINAL CORREGIDA PARA GITHUB ACTIONS
 =============================================================================
-Correcciones y mejoras aplicadas:
-
-PROBLEMA 1 - PDFs no se subían:
-  - Eliminado stream=True
-  - Verificación por magic bytes b'%PDF' en lugar de content-type
-  - timeout separado (10s conexión / 60s lectura)
-  - allow_redirects=True explícito
-  - User-Agent de navegador real
-
-PROBLEMA 2 - Sumilla en blanco:
-  - Extracción basada en estructura HTML real confirmada
-  - <p> con <b> = fecha | <p> sin <b> = sumilla
-  - Fallback al título si sumilla vacía
-
-PROBLEMA 3 - Tipo Ordinaria/Extraordinaria incorrecto:
-  - Tipo detectado directamente desde <strong class="extraordinaria"> en HTML
-  - Checkbox usa .click() en vez de .checked para disparar evento change
-  - TipoEdicion incluido en clave de deduplicado
-
-PROBLEMA 4 - Filtrado incorrecto:
-  - MINEM, OSINERGMIN, PERUPETRO y OEFA aceptados SIEMPRE sin filtro
-  - SECTORES_SECUNDARIOS con umbral más permisivo
-  - PALABRAS_OBLIGATORIAS ampliadas
-  - Sistema de feedback desde columna G de Sheets (Opción D)
-  - Corpus inicial enriquecido con frases técnicas reales del sector
-
-WORKFLOW:
-  - Cron corregido a 12:15 UTC = 7:15 AM Lima
-  - TZ: America/Lima como variable de entorno real
-=============================================================================
 """
 
 import os
