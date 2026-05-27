@@ -804,6 +804,18 @@ def extraer_normas(driver, fecha_obj, es_extraordinaria=False):
             except Exception as e:
                 print(f"   ⚠️ Error en artículo {idx}: {e}")
                 continue
+        # ====== DIAGNÓSTICO TEMPORAL ======
+        print("🔎 DIAGNÓSTICO: analizando HTML recibido...")
+        todos_articles = soup.find_all("article")
+        print(f"  Total <article> en página: {len(todos_articles)}")
+        for art in todos_articles[:3]:
+            print(f"  Clases: {art.get('class', 'sin clase')}")
+            print(f"  Primeros 200 chars: {str(art)[:200]}")
+        
+        # Buscar con selector más amplio por si cambió la clase
+        divs_posibles = soup.find_all(["article", "div"], class_=lambda c: c and ("articulo" in str(c).lower() or "norma" in str(c).lower() or "edicion" in str(c).lower()))
+        print(f"  Elementos con 'articulo/norma/edicion' en clase: {len(divs_posibles)}")
+        # ==================================
 
         print(f"\n8️⃣ CANDIDATOS EXTRAÍDOS: {len(candidatos)}")
         print(f"{'='*100}\n")
