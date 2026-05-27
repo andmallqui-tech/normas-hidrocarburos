@@ -756,43 +756,40 @@ def extraer_normas(driver, fecha_obj, es_extraordinaria=False):
                     sumilla = titulo
 
                 # Buscar PDF URL en inputs
-# NUEVO: extraer PDF URL desde la imagen de portada
-pdf_url = ""
+                pdf_url = ""
 
-# Método 1: desde img src (estructura nueva del sitio)
-img_tag = art.find("div", class_="ediciones_pdf")
-if img_tag:
-    img = img_tag.find("img")
-    if img and img.has_attr("src"):
-        src = img["src"]
-        # src ejemplo: ../NormasElperuano/PortadaFull/2026/05/27/2519373-1_Portada.jpg
-        # PDF equivalente: /NormasElperuano/2026/05/27/2519373-1.pdf
-        match = re.search(r'PortadaFull/(\d{4}/\d{2}/\d{2})/(\d+-\d+)_Portada\.jpg', src)
-        if match:
-            fecha_path = match.group(1)
-            codigo = match.group(2)
-            pdf_url = f"https://diariooficial.elperuano.pe/NormasElperuano/{fecha_path}/{codigo}.pdf"
+                # Método 1: desde img src (estructura nueva del sitio)
+                img_tag = art.find("div", class_="ediciones_pdf")
+                if img_tag:
+                    img = img_tag.find("img")
+                    if img and img.has_attr("src"):
+                        src = img["src"]
+                        match = re.search(r'PortadaFull/(\d{4}/\d{2}/\d{2})/(\d+-\d+)_Portada\.jpg', src)
+                        if match:
+                            fecha_path = match.group(1)
+                            codigo = match.group(2)
+                            pdf_url = f"https://diariooficial.elperuano.pe/NormasElperuano/{fecha_path}/{codigo}.pdf"
 
-            # Método 2 (fallback): inputs con data-url (estructura antigua)
-            if not pdf_url:
-                for inp in art.find_all("input"):
-                    if inp.has_attr("data-url"):
-                        val = (inp.get("value", "") or "").lower()
-                        if "descarga individual" in val or "descarga" in val:
-                            pdf_url = complete_href(inp['data-url'])
-                            break
+                # Método 2 (fallback): inputs con data-url (estructura antigua)
                 if not pdf_url:
                     for inp in art.find_all("input"):
                         if inp.has_attr("data-url"):
-                            pdf_url = complete_href(inp['data-url'])
+                            val = (inp.get("value", "") or "").lower()
+                            if "descarga individual" in val or "descarga" in val:
+                                pdf_url = complete_href(inp['data-url'])
+                                break
+                    if not pdf_url:
+                        for inp in art.find_all("input"):
+                            if inp.has_attr("data-url"):
+                                pdf_url = complete_href(inp['data-url'])
+                                break
+
+                # Método 3 (fallback): enlaces directos a PDF
+                if not pdf_url:
+                    for a in art.find_all("a", href=True):
+                        if ".pdf" in a['href'].lower():
+                            pdf_url = complete_href(a['href'])
                             break
-            
-            # Método 3 (fallback): enlaces directos a PDF
-            if not pdf_url:
-                for a in art.find_all("a", href=True):
-                    if ".pdf" in a['href'].lower():
-                        pdf_url = complete_href(a['href'])
-                        break
 
                 if not pdf_url:
                     print(f"   ⚠️ Artículo {idx} sin PDF URL, omitiendo")
@@ -812,7 +809,6 @@ if img_tag:
                     "texto_completo": texto_completo
                 })
 
-                # Debug del primer artículo
                 if idx == 1:
                     print(f"\n   📋 DEBUG PRIMER ARTÍCULO:")
                     print(f"      Sector:  {sector[:60]}")
@@ -825,6 +821,7 @@ if img_tag:
             except Exception as e:
                 print(f"   ⚠️ Error en artículo {idx}: {e}")
                 continue
+            
         # ====== DIAGNÓSTICO TEMPORAL ======
         print("🔎 DIAGNÓSTICO: analizando HTML recibido...")
         todos_articles = soup.find_all("article")
