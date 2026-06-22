@@ -212,9 +212,21 @@ class GoogleDriveClient:
 # TELEGRAM
 # =============================================================================
 
+def html_escape(texto):
+    """Escapa caracteres especiales HTML para Telegram parse_mode HTML"""
+    if not isinstance(texto, str):
+        return ""
+    return (texto
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;"))
+
 def enviar_telegram(mensaje, bot_token, chat_id):
     try:
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        # Telegram tiene un límite de 4096 caracteres por mensaje
+        if len(mensaje) > 4096:
+            mensaje = mensaje[:4090] + "..."
         data = {'chat_id': chat_id, 'text': mensaje, 'parse_mode': 'HTML'}
         response = requests.post(url, data=data, timeout=10)
         response.raise_for_status()
@@ -755,22 +767,42 @@ def extraer_normas(driver, fecha_obj, es_extraordinaria=False):
                 if not sumilla and titulo:
                     sumilla = titulo
 
-                # Buscar PDF URL en inputs
+                # Buscar PDF URL en botones de descarga
                 pdf_url = ""
 
-                # Método 1: desde img src (estructura nueva del sitio)
-                img_tag = art.find("div", class_="ediciones_pdf")
-                if img_tag:
-                    img = img_tag.find("img")
-                    if img and img.has_attr("src"):
-                        src = img["src"]
-                        match = re.search(r'PortadaFull/(\d{4}/\d{2}/\d{2})/(\d+-\d+)_Portada\.jpg', src)
-                        if match:
-                            fecha_path = match.group(1)
-                            codigo = match.group(2)
-                            pdf_url = f"https://diariooficial.elperuano.pe/NormasElperuano/{fecha_path}/{codigo}.pdf"
+                # Método 1 (PRINCIPAL): enlace "Descarga individual" en div.ediciones_botones
+                # Estructura actual: <a href="https://busquedas.elperuano.pe/dispositivo/NL/XXXXXXX-1">Descarga individual</a>
+                botones_div = art.find("div", class_="ediciones_botones")
+                if botones_div:
+                    for a in botones_div.find_all("a", href=True):
+                        texto_enlace = a.get_text(strip=True).lower()
+                        if "descarga individual" in texto_enlace:
+                            pdf_url = a['href']
+                            if pdf_url.startswith("/"):
+                                pdf_url = "https://busquedas.elperuano.pe" + pdf_url
+                            break
+                    # Si no hay "descarga individual", tomar el primer enlace del div
+                    if not pdf_url:
+                        primer_a = botones_div.find("a", href=True)
+                        if primer_a:
+                            pdf_url = primer_a['href']
+                            if pdf_url.startswith("/"):
+                                pdf_url = "https://busquedas.elperuano.pe" + pdf_url
 
-                # Método 2 (fallback): inputs con data-url (estructura antigua)
+                # Método 2 (fallback): construir URL desde imagen de portada
+                if not pdf_url:
+                    img_tag = art.find("div", class_="ediciones_pdf")
+                    if img_tag:
+                        img = img_tag.find("img")
+                        if img and img.has_attr("src"):
+                            src = img["src"]
+                            match = re.search(r'PortadaFull/(\d{4}/\d{2}/\d{2})/(\d+-\d+)_Portada\.jpg', src)
+                            if match:
+                                fecha_path = match.group(1)
+                                codigo = match.group(2)
+                                pdf_url = f"https://diariooficial.elperuano.pe/NormasElperuano/{fecha_path}/{codigo}.pdf"
+
+                # Método 3 (fallback): inputs con data-url (estructura antigua)
                 if not pdf_url:
                     for inp in art.find_all("input"):
                         if inp.has_attr("data-url"):
@@ -784,7 +816,7 @@ def extraer_normas(driver, fecha_obj, es_extraordinaria=False):
                                 pdf_url = complete_href(inp['data-url'])
                                 break
 
-                # Método 3 (fallback): enlaces directos a PDF
+                # Método 4 (fallback): enlaces directos a PDF
                 if not pdf_url:
                     for a in art.find_all("a", href=True):
                         if ".pdf" in a['href'].lower():
@@ -883,7 +915,7 @@ def main():
     fechas_a_procesar = []
 
     if DIA_SEMANA == 0:  # Lunes
-        print("   📅 ES LUNES — revisando viernes, sábado y domingo:")
+        print("   📅 ES LUNES — revisando viernes, sábado, domingo y lunes:")
         # Ordinarias: sábado(-2), domingo(-1), lunes(0)
         for dias_atras in [2, 1, 0]:
             fecha = HOY - timedelta(days=dias_atras)
@@ -1075,8 +1107,10 @@ def main():
             tipo_etiqueta = ""
             if str(norma.get('TipoEdicion', '')).strip().lower() == "extraordinaria":
                 tipo_etiqueta = " (Extraordinaria)"
-            mensaje += f"<b>{norma['titulo']}{tipo_etiqueta}</b>\n"
-            mensaje += f"{norma.get('Sumilla', '')}\n\n"
+            titulo_esc = html_escape(norma['titulo'])
+            sumilla_esc = html_escape(norma.get('Sumilla', ''))
+            mensaje += f"<b>{titulo_esc}{tipo_etiqueta}</b>\n"
+            mensaje += f"{sumilla_esc}\n\n"
     else:
         if DIA_SEMANA == 0:
             fecha_inicio = (HOY - timedelta(days=3)).strftime('%d/%m/%y')
