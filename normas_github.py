@@ -212,37 +212,53 @@ class GoogleDriveClient:
 # TELEGRAM
 # =============================================================================
 
-def html_escape(texto):
-    """Escapa caracteres especiales HTML para Telegram parse_mode HTML"""
-    if not isinstance(texto, str):
-        return ""
-    return (texto
-            .replace("&", "&amp;")
-            .replace("<", "&lt;")
-            .replace(">", "&gt;"))
-
 def enviar_telegram(mensaje, bot_token, chat_id):
+    """Envía mensaje dividido en partes si supera 4096 caracteres"""
     try:
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-
-        if len(mensaje) > 4096:
-            mensaje = mensaje[:4090] + "..."
-
-        data = {
-            'chat_id': chat_id,
-            'text': mensaje
-            # sin parse_mode para evitar errores de HTML malformado
-        }
-
-        response = requests.post(url, data=data, timeout=10)
-
-        print("   🔎 Telegram status:", response.status_code)
-        print("   🔎 Telegram response:", response.text)
-
-        response.raise_for_status()
-        print("   ✅ Telegram enviado")
+        
+        # Dividir por párrafos dobles (cada norma termina en \n\n)
+        if len(mensaje) <= 4096:
+            partes = [mensaje]
+        else:
+            partes = []
+            parte_actual = ""
+            
+            for bloque in mensaje.split("\n\n"):
+                bloque = bloque.strip()
+                if not bloque:
+                    continue
+                
+                candidato = parte_actual + bloque + "\n\n"
+                
+                if len(candidato) > 4096:
+                    # Guardar parte actual y empezar nueva
+                    if parte_actual:
+                        partes.append(parte_actual.strip())
+                    parte_actual = bloque + "\n\n"
+                else:
+                    parte_actual = candidato
+            
+            if parte_actual.strip():
+                partes.append(parte_actual.strip())
+        
+        # Enviar cada parte
+        for i, parte in enumerate(partes, 1):
+            print(f"   📤 Enviando parte {i}/{len(partes)} ({len(parte)} chars)...")
+            data = {
+                'chat_id': chat_id,
+                'text': parte
+            }
+            response = requests.post(url, data=data, timeout=10)
+            print(f"   🔎 Status: {response.status_code}")
+            response.raise_for_status()
+            
+            if i < len(partes):
+                time.sleep(1)  # pausa entre mensajes para no saturar la API
+        
+        print(f"   ✅ Telegram enviado ({len(partes)} parte(s))")
         return True
-
+        
     except Exception as e:
         print(f"   ❌ Error Telegram: {e}")
         return False
