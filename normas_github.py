@@ -224,18 +224,28 @@ def html_escape(texto):
 def enviar_telegram(mensaje, bot_token, chat_id):
     try:
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        # Telegram tiene un límite de 4096 caracteres por mensaje
+
         if len(mensaje) > 4096:
             mensaje = mensaje[:4090] + "..."
-        data = {'chat_id': chat_id, 'text': mensaje, 'parse_mode': 'HTML'}
+
+        data = {
+            'chat_id': chat_id,
+            'text': mensaje,
+            'parse_mode': 'HTML'
+        }
+
         response = requests.post(url, data=data, timeout=10)
+
+        print("   🔎 Telegram status:", response.status_code)
+        print("   🔎 Telegram response:", response.text)
+
         response.raise_for_status()
         print("   ✅ Telegram enviado")
         return True
+
     except Exception as e:
         print(f"   ❌ Error Telegram: {e}")
         return False
-
 # =============================================================================
 # NORMALIZACIÓN
 # =============================================================================
