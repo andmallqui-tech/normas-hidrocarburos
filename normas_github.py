@@ -1091,65 +1091,19 @@ def main():
     print(f"\n✅ TOTAL ACEPTADOS: {len(aceptados)}")
 
     # -------------------------------------------------------------------------
-    # PASO 9: DESCARGAR Y SUBIR PDFs
+    # PASO 9: GUARDAR SOLO EL URL EN SHEETS (SIN DESCARGAR PDFs)
     # -------------------------------------------------------------------------
-    folder_id = None
-    folder_name = HOY.strftime("%Y-%m-%d")
-
     if aceptados:
-        print("\n📥 PASO 9: DESCARGAR PDFs")
-        folder_id = drive_client.create_folder(DRIVE_FOLDER_ID, folder_name)
-
-        if folder_id:
-            print(f"   ✅ Carpeta lista: {folder_name}")
-
-            for i, norma in enumerate(aceptados, 1):
-                print(f"\n   [{i}/{len(aceptados)}] Procesando: {norma['titulo'][:50]}...")
-                try:
-                    # Resolver URL real del PDF (convierte URL de visualización → PDF directo)
-                    url_original = norma['pdf_url']
-                    url_pdf_real = resolver_pdf_url(url_original, norma.get('FechaPublicacion', ''))
-                    if url_pdf_real != url_original:
-                        print(f"      🔄 URL resuelta: {url_pdf_real}")
-
-                    response = requests.get(
-                        url_pdf_real,
-                        timeout=(10, 60),       # 10s conexión, 60s lectura
-                        allow_redirects=True,   # sigue redirecciones explícitamente
-                        headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-                    )
-                    print(f"      HTTP Status:  {response.status_code}")
-                    print(f"      URL final:    {response.url}")
-                    print(f"      Content-Type: {response.headers.get('content-type', 'N/A')}")
-                    print(f"      Tamaño:       {len(response.content)} bytes")
-
-                    # Verificar con magic bytes (%PDF) — más confiable que content-type
-                    es_pdf_valido = (
-                        response.status_code == 200 and
-                        len(response.content) > 500 and
-                        response.content[:4] == b'%PDF'
-                    )
-
-                    if es_pdf_valido:
-                        filename = norma['NombreArchivo']
-                        link = drive_client.upload_pdf(folder_id, filename, response.content)
-                        norma['drive_link'] = link if link else norma['pdf_url']
-                        print(f"      ✅ PDF válido subido correctamente")
-                    else:
-                        print(f"      ⚠️ No es PDF válido (magic bytes: {response.content[:8]})")
-                        # Guardar la URL resuelta aunque no sea PDF — es mejor que la de visualización
-                        norma['drive_link'] = url_pdf_real
-
-                except requests.exceptions.Timeout:
-                    print(f"      ❌ Timeout al descargar PDF")
-                    norma['drive_link'] = norma.get('pdf_url', '')
-                except requests.exceptions.TooManyRedirects:
-                    print(f"      ❌ Demasiadas redirecciones")
-                    norma['drive_link'] = norma.get('pdf_url', '')
-                except Exception as e:
-                    print(f"      ❌ Error inesperado: {e}")
-                    norma['drive_link'] = norma.get('pdf_url', '')
-
+        print("\n📥 PASO 9: GUARDAR SOLO URL EN EXCEL (SIN DESCARGA)")
+    
+        for i, norma in enumerate(aceptados, 1):
+            print(f"\n   [{i}/{len(aceptados)}] Procesando: {norma['titulo'][:50]}...")
+    
+            # Guardar el URL que ya se encontró al extraer la norma
+            # No se descarga nada
+            norma['drive_link'] = norma.get('pdf_url', '')
+    
+            print(f"      🔗 URL guardada: {norma['drive_link']}")
     # -------------------------------------------------------------------------
     # PASO 10: GOOGLE SHEETS
     # Columnas: A=Fecha | B=Título | C=FechaPub | D=Sumilla | E=Link | F=Tipo | G=Relevante(S/N)
