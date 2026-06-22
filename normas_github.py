@@ -628,10 +628,6 @@ def evaluar_relevancia(texto_candidato, sector, vectorizador, X_base):
 # RESOLUCIÓN DE URL DE PDF
 # =============================================================================
 
-# =============================================================================
-# RESOLUCIÓN DE URL DE PDF
-# =============================================================================
-
 def resolver_pdf_url(url_dispositivo, fecha_pub_str=""):
     """
     Toma la URL del botón de detalle y trata de encontrar el PDF real dentro del HTML.
@@ -1165,7 +1161,6 @@ def main():
     # PASO 12: TELEGRAM
     # -------------------------------------------------------------------------
     print("\n💬 PASO 12: ENVIANDO TELEGRAM...")
-
     if aceptados:
         if DIA_SEMANA == 0:
             fecha_inicio = (HOY - timedelta(days=3)).strftime('%d/%m/%y')
@@ -1178,10 +1173,8 @@ def main():
             tipo_etiqueta = ""
             if str(norma.get('TipoEdicion', '')).strip().lower() == "extraordinaria":
                 tipo_etiqueta = " (Extraordinaria)"
-            titulo_esc = html_escape(norma['titulo'])
-            sumilla_esc = html_escape(norma.get('Sumilla', ''))
-            mensaje += f"*{titulo_esc}{tipo_etiqueta}*\n"
-            mensaje += f"{sumilla_esc}\n\n"
+            mensaje += f"{norma['titulo']}{tipo_etiqueta}\n"
+            mensaje += f"{norma.get('Sumilla', '')}\n\n"
     else:
         if DIA_SEMANA == 0:
             fecha_inicio = (HOY - timedelta(days=3)).strftime('%d/%m/%y')
@@ -1199,7 +1192,7 @@ def main():
             )
 
     enviar_telegram(mensaje, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
-
+    
     # -------------------------------------------------------------------------
     # RESUMEN FINAL
     # -------------------------------------------------------------------------
