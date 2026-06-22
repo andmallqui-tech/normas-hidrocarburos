@@ -602,78 +602,85 @@ def evaluar_relevancia(texto_candidato, sector, vectorizador, X_base):
 # RESOLUCIÓN DE URL DE PDF
 # =============================================================================
 
+# =============================================================================
+# RESOLUCIÓN DE URL DE PDF
+# =============================================================================
+
 def resolver_pdf_url(url_dispositivo, fecha_pub_str=""):
     """
-    Convierte una URL de visualización del tipo:
-        https://busquedas.elperuano.pe/dispositivo/NL/CODIGO-1
-    en la URL directa del PDF:
-        https://diariooficial.elperuano.pe/NormasElperuano/YYYY/MM/DD/CODIGO.pdf
-
-    Estrategia:
-    1. Extrae el código del artículo de la URL (ej: 2527958 de /dispositivo/NL/2527958-1)
-    2. Intenta obtener la fecha desde fecha_pub_str (formato DD/MM/YYYY)
-    3. Si no tiene fecha, hace GET a la página HTML y extrae la URL del PDF del <meta> o <a>
-    4. Construye la URL directa del PDF
+    Toma la URL del botón de detalle y trata de encontrar el PDF real dentro del HTML.
+    Si no lo encuentra, devuelve la URL original.
     """
     if not url_dispositivo:
         return url_dispositivo
 
-    # Si ya es una URL directa de PDF, devolverla tal cual
-    if url_dispositivo.endswith(".pdf"):
+    # Si ya es PDF directo, devolver tal cual
+    if url_dispositivo.lower().endswith(".pdf"):
         return url_dispositivo
 
-    # Extraer código del artículo (ej: "2527958" de "/dispositivo/NL/2527958-1")
-    match_codigo = re.search(r'/dispositivo/NL/(\d+)-(\d+)$', url_dispositivo)
-    if not match_codigo:
-        return url_dispositivo  # No reconocemos el patrón, devolver original
-
-    codigo_completo = f"{match_codigo.group(1)}-{match_codigo.group(2)}"  # ej: 2527958-1
-    codigo_base = match_codigo.group(1)  # ej: 2527958
-
-    # Intentar construir con fecha_pub_str (formato DD/MM/YYYY)
-    if fecha_pub_str:
-        match_fecha = re.match(r'(\d{2})/(\d{2})/(\d{4})', fecha_pub_str.strip())
-        if match_fecha:
-            dd, mm, yyyy = match_fecha.groups()
-            pdf_url = f"https://diariooficial.elperuano.pe/NormasElperuano/{yyyy}/{mm}/{dd}/{codigo_completo}.pdf"
-            return pdf_url
-
-    # Fallback: hacer GET a la página HTML y buscar el link al PDF
+    # Pedir la página HTML del dispositivo
     try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        resp = requests.get(url_dispositivo, headers=headers, timeout=15, allow_redirects=True)
-        if resp.status_code == 200:
-            soup_page = BeautifulSoup(resp.text, "html.parser")
-
-            # Buscar enlace directo al PDF en la página
-            for a in soup_page.find_all("a", href=True):
-                href = a['href']
-                if '.pdf' in href.lower() and 'NormasElperuano' in href:
-                    if href.startswith("/"):
-                        href = "https://diariooficial.elperuano.pe" + href
-                    return href
-
-            # Buscar en meta refresh o canonical
-            for meta in soup_page.find_all("meta"):
-                content = meta.get("content", "")
-                if '.pdf' in content.lower() and 'NormasElperuano' in content:
-                    return content.strip()
-
-            # Buscar patrón de fecha en la URL canónica o en atributos del HTML
-            match_en_html = re.search(
-                r'NormasElperuano[/\\](\d{4})[/\\](\d{2})[/\\](\d{2})[/\\]' + re.escape(codigo_completo),
-                resp.text
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
             )
-            if match_en_html:
-                yyyy, mm, dd = match_en_html.groups()
-                return f"https://diariooficial.elperuano.pe/NormasElperuano/{yyyy}/{mm}/{dd}/{codigo_completo}.pdf"
+        }
+
+        resp = requests.get(
+            url_dispositivo,
+            headers=headers,
+            timeout=15,
+            allow_redirects=True
+        )
+
+        if resp.status_code != 200:
+            return url_dispositivo
+
+        soup_page = BeautifulSoup(resp.text, "html.parser")
+
+        # 1) Buscar enlace explícito a PDF en el HTML
+        for a in soup_page.find_all("a", href=True):
+            href = a["href"].strip()
+            texto = a.get_text(" ", strip=True).lower()
+
+            if ".pdf" in href.lower():
+                if href.startswith("/"):
+                    href = "https://diariooficial.elperuano.pe" + href
+                return href
+
+            # A veces el botón viene como enlace al dispositivo con texto de descarga
+            if "descarga" in texto and href:
+                if href.startswith("/"):
+                    href = "https://busquedas.elperuano.pe" + href
+                # devolver el enlace del botón, por si allí está el recurso real
+                return href
+
+        # 2) Buscar PDF dentro de meta tags
+        for meta in soup_page.find_all("meta"):
+            content = meta.get("content", "")
+            if ".pdf" in content.lower():
+                if content.startswith("/"):
+                    content = "https://diariooficial.elperuano.pe" + content
+                return content.strip()
+
+        # 3) Buscar iframe/embed/object con PDF
+        for tag in soup_page.find_all(["iframe", "embed", "object"]):
+            src = tag.get("src") or tag.get("data")
+            if src and ".pdf" in src.lower():
+                if src.startswith("/"):
+                    src = "https://diariooficial.elperuano.pe" + src
+                return src.strip()
+
+        # 4) Fallback: si el HTML trae alguna URL absoluta a PDF
+        match_pdf = re.search(r'https?://[^"\']+\.pdf', resp.text, flags=re.I)
+        if match_pdf:
+            return match_pdf.group(0)
 
     except Exception as e:
         print(f"      ⚠️ resolver_pdf_url fallback falló: {e}")
 
-    # No se pudo resolver, devolver la URL original
     return url_dispositivo
-
 
 # =============================================================================
 # SELENIUM - FUNCIONES AUXILIARES
