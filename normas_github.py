@@ -230,8 +230,8 @@ def enviar_telegram(mensaje, bot_token, chat_id):
 
         data = {
             'chat_id': chat_id,
-            'text': mensaje,
-            'parse_mode': 'HTML'
+            'text': mensaje
+            # sin parse_mode para evitar errores de HTML malformado
         }
 
         response = requests.post(url, data=data, timeout=10)
@@ -1164,7 +1164,7 @@ def main():
                 tipo_etiqueta = " (Extraordinaria)"
             titulo_esc = html_escape(norma['titulo'])
             sumilla_esc = html_escape(norma.get('Sumilla', ''))
-            mensaje += f"<b>{titulo_esc}{tipo_etiqueta}</b>\n"
+            mensaje += f"*{titulo_esc}{tipo_etiqueta}*\n"
             mensaje += f"{sumilla_esc}\n\n"
     else:
         if DIA_SEMANA == 0:
@@ -1193,8 +1193,7 @@ def main():
     print(f"   ✅ Normas aceptadas:   {len(aceptados)}")
     print(f"   ⭐ Prioritarias:       {len(prioritarios)}")
     print(f"   📋 Total evaluadas:    {len(candidatos_unicos)}")
-    if aceptados and folder_id:
-        print(f"   📁 Carpeta Drive:     {folder_name}")
+    # folder_id ya no se usa (sin descarga de PDFs)
     print("="*80)
 
 
