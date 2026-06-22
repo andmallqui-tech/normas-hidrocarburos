@@ -599,6 +599,83 @@ def evaluar_relevancia(texto_candidato, sector, vectorizador, X_base):
     return relevante, razon
 
 # =============================================================================
+# RESOLUCIÓN DE URL DE PDF
+# =============================================================================
+
+def resolver_pdf_url(url_dispositivo, fecha_pub_str=""):
+    """
+    Convierte una URL de visualización del tipo:
+        https://busquedas.elperuano.pe/dispositivo/NL/CODIGO-1
+    en la URL directa del PDF:
+        https://diariooficial.elperuano.pe/NormasElperuano/YYYY/MM/DD/CODIGO.pdf
+
+    Estrategia:
+    1. Extrae el código del artículo de la URL (ej: 2527958 de /dispositivo/NL/2527958-1)
+    2. Intenta obtener la fecha desde fecha_pub_str (formato DD/MM/YYYY)
+    3. Si no tiene fecha, hace GET a la página HTML y extrae la URL del PDF del <meta> o <a>
+    4. Construye la URL directa del PDF
+    """
+    if not url_dispositivo:
+        return url_dispositivo
+
+    # Si ya es una URL directa de PDF, devolverla tal cual
+    if url_dispositivo.endswith(".pdf"):
+        return url_dispositivo
+
+    # Extraer código del artículo (ej: "2527958" de "/dispositivo/NL/2527958-1")
+    match_codigo = re.search(r'/dispositivo/NL/(\d+)-(\d+)$', url_dispositivo)
+    if not match_codigo:
+        return url_dispositivo  # No reconocemos el patrón, devolver original
+
+    codigo_completo = f"{match_codigo.group(1)}-{match_codigo.group(2)}"  # ej: 2527958-1
+    codigo_base = match_codigo.group(1)  # ej: 2527958
+
+    # Intentar construir con fecha_pub_str (formato DD/MM/YYYY)
+    if fecha_pub_str:
+        match_fecha = re.match(r'(\d{2})/(\d{2})/(\d{4})', fecha_pub_str.strip())
+        if match_fecha:
+            dd, mm, yyyy = match_fecha.groups()
+            pdf_url = f"https://diariooficial.elperuano.pe/NormasElperuano/{yyyy}/{mm}/{dd}/{codigo_completo}.pdf"
+            return pdf_url
+
+    # Fallback: hacer GET a la página HTML y buscar el link al PDF
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        resp = requests.get(url_dispositivo, headers=headers, timeout=15, allow_redirects=True)
+        if resp.status_code == 200:
+            soup_page = BeautifulSoup(resp.text, "html.parser")
+
+            # Buscar enlace directo al PDF en la página
+            for a in soup_page.find_all("a", href=True):
+                href = a['href']
+                if '.pdf' in href.lower() and 'NormasElperuano' in href:
+                    if href.startswith("/"):
+                        href = "https://diariooficial.elperuano.pe" + href
+                    return href
+
+            # Buscar en meta refresh o canonical
+            for meta in soup_page.find_all("meta"):
+                content = meta.get("content", "")
+                if '.pdf' in content.lower() and 'NormasElperuano' in content:
+                    return content.strip()
+
+            # Buscar patrón de fecha en la URL canónica o en atributos del HTML
+            match_en_html = re.search(
+                r'NormasElperuano[/\\](\d{4})[/\\](\d{2})[/\\](\d{2})[/\\]' + re.escape(codigo_completo),
+                resp.text
+            )
+            if match_en_html:
+                yyyy, mm, dd = match_en_html.groups()
+                return f"https://diariooficial.elperuano.pe/NormasElperuano/{yyyy}/{mm}/{dd}/{codigo_completo}.pdf"
+
+    except Exception as e:
+        print(f"      ⚠️ resolver_pdf_url fallback falló: {e}")
+
+    # No se pudo resolver, devolver la URL original
+    return url_dispositivo
+
+
+# =============================================================================
 # SELENIUM - FUNCIONES AUXILIARES
 # =============================================================================
 
@@ -1022,8 +1099,14 @@ def main():
             for i, norma in enumerate(aceptados, 1):
                 print(f"\n   [{i}/{len(aceptados)}] Procesando: {norma['titulo'][:50]}...")
                 try:
+                    # Resolver URL real del PDF (convierte URL de visualización → PDF directo)
+                    url_original = norma['pdf_url']
+                    url_pdf_real = resolver_pdf_url(url_original, norma.get('FechaPublicacion', ''))
+                    if url_pdf_real != url_original:
+                        print(f"      🔄 URL resuelta: {url_pdf_real}")
+
                     response = requests.get(
-                        norma['pdf_url'],
+                        url_pdf_real,
                         timeout=(10, 60),       # 10s conexión, 60s lectura
                         allow_redirects=True,   # sigue redirecciones explícitamente
                         headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
@@ -1047,17 +1130,18 @@ def main():
                         print(f"      ✅ PDF válido subido correctamente")
                     else:
                         print(f"      ⚠️ No es PDF válido (magic bytes: {response.content[:8]})")
-                        norma['drive_link'] = norma['pdf_url']
+                        # Guardar la URL resuelta aunque no sea PDF — es mejor que la de visualización
+                        norma['drive_link'] = url_pdf_real
 
                 except requests.exceptions.Timeout:
                     print(f"      ❌ Timeout al descargar PDF")
-                    norma['drive_link'] = norma['pdf_url']
+                    norma['drive_link'] = norma.get('pdf_url', '')
                 except requests.exceptions.TooManyRedirects:
-                    print(f"      ❌ Demasiadas redirecciones: {norma['pdf_url']}")
-                    norma['drive_link'] = norma['pdf_url']
+                    print(f"      ❌ Demasiadas redirecciones")
+                    norma['drive_link'] = norma.get('pdf_url', '')
                 except Exception as e:
                     print(f"      ❌ Error inesperado: {e}")
-                    norma['drive_link'] = norma['pdf_url']
+                    norma['drive_link'] = norma.get('pdf_url', '')
 
     # -------------------------------------------------------------------------
     # PASO 10: GOOGLE SHEETS
