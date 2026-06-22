@@ -883,14 +883,14 @@ def main():
     fechas_a_procesar = []
 
     if DIA_SEMANA == 0:  # Lunes
-        print("   📅 ES LUNES — revisando viernes, sábado y domingo:")
-        # Ordinarias: viernes(-3), sábado(-2), domingo(-1)
-        for dias_atras in range(3, 0, -1):
+        print("   📅 ES LUNES — revisando viernes, sábado, domingo y lunes:")
+        # Ordinarias: sábado(-2), domingo(-1), lunes(0)
+        for dias_atras in [2, 1, 0]:
             fecha = HOY - timedelta(days=dias_atras)
             fechas_a_procesar.append((fecha, False))
             print(f"      • Ordinaria:     {fecha.strftime('%d/%m/%Y')}")
-        # Extraordinarias: jueves(-4), viernes(-3), sábado(-2)
-        for dias_atras in range(4, 1, -1):
+        # Extraordinarias: viernes(-3), sábado(-2), domingo(-1)
+        for dias_atras in [3, 2, 1]:
             fecha = HOY - timedelta(days=dias_atras)
             fechas_a_procesar.append((fecha, True))
             print(f"      • Extraordinaria: {fecha.strftime('%d/%m/%Y')}")
