@@ -396,83 +396,6 @@ print(f"   Keywords manuales: {len(KEYWORDS_MANUAL)}")
 print(f"   Tokens técnicos: {len(tokens_tecnicos)}")
 
 # =============================================================================
-# CLASIFICACIÓN POR CATEGORÍA (Energético / Ambiental)
-# =============================================================================
-
-PALABRAS_ENERGETICO = set([normalizar_texto(x) for x in [
-    # Hidrocarburos
-    'hidrocarburos', 'hidrocarburo', 'petroleo', 'gas natural', 'gnv', 'glp',
-    'perupetro', 'osinergmin', 'oleoducto', 'gasoducto', 'refineria',
-    'banda de precios', 'combustible', 'combustibles liquidos', 'gasolina',
-    'diesel', 'diesel b5', 'kerosene', 'turbo', 'residual', 'bunker',
-    'lote petrolero', 'lote', 'pozo', 'yacimiento', 'upstream', 'downstream',
-    'fraccionamiento', 'terminal', 'planta de gas', 'ductos',
-    'fijaron precios', 'recursos energeticos', 'distribucion natural',
-    'registro de hidrocarburos', 'actividades de hidrocarburos',
-    'instalaciones de gas', 'red de distribucion',
-    'canon gasifero', 'contrato de licencia', 'contrato de servicios',
-    'tarifa de distribucion', 'tarifa de transporte',
-    'precio de gas', 'precio del gas', 'exploracion', 'explotacion',
-    'licencia de operacion',
-    # Eléctrico / renovables / electromovilidad
-    'energia electrica', 'generacion electrica', 'transmision electrica',
-    'distribucion electrica', 'sistema electrico interconectado nacional',
-    'sistema electrico interconectado', 'sein', 'tarifa electrica',
-    'concesion electrica', 'concesion definitiva electrica',
-    'central hidroelectrica', 'central termoelectrica', 'central de generacion',
-    'energia solar', 'energia eolica', 'energia renovable',
-    'recursos energeticos renovables', 'rer', 'autogeneracion', 'cogeneracion',
-    'coes', 'tarifa de generacion', 'peaje de transmision',
-    'pliego tarifario electrico', 'planta fotovoltaica', 'parque eolico',
-    'electromovilidad', 'vehiculo electrico', 'estacion de carga',
-    'biocombustible', 'biodiesel', 'etanol',
-    # Genéricos (aplican también a energía)
-    'tarifa', 'fiscalizacion', 'supervision', 'regalia', 'concesion', 'oefa',
-]])
-
-PALABRAS_AMBIENTAL = set([normalizar_texto(x) for x in [
-    'ambiente', 'minam', 'ambiental', 'senace', 'sernanp', 'serfor', 'senamhi',
-    'gestion ambiental', 'evaluacion de impacto ambiental', 'eia',
-    'certificacion ambiental', 'estudio de impacto ambiental',
-    'estandar de calidad ambiental', 'eca', 'limite maximo permisible', 'lmp',
-    'cambio climatico', 'biodiversidad', 'areas naturales protegidas',
-    'recursos forestales', 'ordenamiento territorial ambiental',
-    'certificado de emisiones', 'instrumento de gestion ambiental',
-    'clasificacion ambiental', 'consulta previa',
-    'zonificacion ecologica economica', 'plan de manejo ambiental',
-    'monitoreo ambiental', 'huella de carbono',
-    # Agua / recursos naturales
-    'recursos hidricos', 'autoridad nacional del agua', 'agua potable',
-    'saneamiento', 'cuenca hidrografica', 'vertimiento', 'residuos solidos',
-    # Genéricos (aplican también a ambiente)
-    'tarifa', 'fiscalizacion', 'supervision', 'oefa',
-]])
-
-def clasificar_categoria(sector, texto_completo):
-    """Clasifica la norma como Energético, Ambiental, ambos, o General"""
-    texto_norm = normalizar_texto(f"{sector} {texto_completo}")
-    es_energia = any(p in texto_norm for p in PALABRAS_ENERGETICO)
-    es_ambiente = any(p in texto_norm for p in PALABRAS_AMBIENTAL)
-
-    if es_energia and es_ambiente:
-        return "Energético y Ambiental"
-    elif es_energia:
-        return "Energético"
-    elif es_ambiente:
-        return "Ambiental"
-    else:
-        return "General"
-
-
-print(f"\n🧠 CONFIGURACIÓN DE FILTRADO:")
-print(f"   Entidades sector (siempre aceptar): {len(ENTIDADES_SECTOR)}")
-print(f"   Sectores prioritarios: {len(SECTORES_PRIORITARIOS)}")
-print(f"   Sectores secundarios: {len(SECTORES_SECUNDARIOS)}")
-print(f"   Palabras obligatorias: {len(PALABRAS_OBLIGATORIAS)}")
-print(f"   Keywords manuales: {len(KEYWORDS_MANUAL)}")
-print(f"   Tokens técnicos: {len(tokens_tecnicos)}")
-
-# =============================================================================
 # CORPUS INICIAL ENRIQUECIDO
 # =============================================================================
 
@@ -1202,7 +1125,6 @@ def main():
     for i, c in enumerate(candidatos_unicos, 1):
         # Nivel 1: sector prioritario en <h4>
         es_prioritario, sector_match = es_sector_prioritario(c['sector'])
-        c['categoria'] = clasificar_categoria(c['sector'], c['texto_completo'])  # ← NUEVA LÍNEA
 
         if es_prioritario:
             aceptados.append(c)
@@ -1225,21 +1147,16 @@ def main():
     # PASO 9: GUARDAR SOLO EL URL EN SHEETS (SIN DESCARGAR PDFs)
     # -------------------------------------------------------------------------
     if aceptados:
-        print("\n📥 PASO 9: RESOLVIENDO LINK PDF REAL PARA GUARDAR EN SHEETS")
+        print("\n📥 PASO 9: GUARDAR SOLO URL EN EXCEL (SIN DESCARGA)")
     
         for i, norma in enumerate(aceptados, 1):
             print(f"\n   [{i}/{len(aceptados)}] Procesando: {norma['titulo'][:50]}...")
     
-            url_html = norma.get('pdf_url', '')
-            print(f"      🌐 URL dispositivo (HTML): {url_html}")
+            # Guardar el URL que ya se encontró al extraer la norma
+            # No se descarga nada
+            norma['drive_link'] = norma.get('pdf_url', '')
     
-            # Resolver el link real del PDF buscando dentro de la página del dispositivo
-            url_pdf_real = resolver_pdf_url(url_html, norma.get('FechaPublicacion', ''))
-            norma['drive_link'] = url_pdf_real
-    
-            print(f"      📄 URL PDF real (para Sheets): {url_pdf_real}")
-    
-            time.sleep(0.5)  # pausa breve para no saturar el servidor de El Peruano
+            print(f"      🔗 URL guardada: {norma['drive_link']}")
     # -------------------------------------------------------------------------
     # PASO 10: GOOGLE SHEETS
     # Columnas: A=Fecha | B=Título | C=FechaPub | D=Sumilla | E=Link | F=Tipo | G=Relevante(S/N)
@@ -1256,10 +1173,9 @@ def main():
                 norma.get('Sumilla', ''),
                 norma.get('drive_link', ''),
                 norma.get('TipoEdicion', ''),
-                '',  # Col G: "Relevante (S/N)" — deja vacío para feedback manual
-                norma.get('categoria', 'General')  # Col H: NUEVA — Categoría
+                ''  # Col G: "Relevante (S/N)" — deja vacío para feedback manual
             ])
-        drive_client.append_to_sheet(SPREADSHEET_ID, 'A:H', rows)
+        drive_client.append_to_sheet(SPREADSHEET_ID, 'A:G', rows)
         print(f"   ✅ {len(rows)} filas agregadas")
         print(f"   ℹ️  Recuerda: puedes marcar S o N en columna G para mejorar el filtrado")
 
@@ -1284,23 +1200,13 @@ def main():
         else:
             mensaje = f"Buen día equipo, se envía la revisión de normas relevantes al sector {HOY.strftime('%d/%m/%y')}\n\n"
 
-        categorias_orden = ["Energético", "Ambiental", "Energético y Ambiental", "General"]
-        iconos = {"Energético": "⚡", "Ambiental": "🌱", "Energético y Ambiental": "⚡🌱", "General": "📌"}
-
-        for categoria in categorias_orden:
-            normas_cat = [n for n in aceptados if n.get('categoria') == categoria]
-            if not normas_cat:
-                continue
-
-            mensaje += f"{iconos[categoria]} {categoria.upper()}\n\n"
-            for i, norma in enumerate(normas_cat, 1):
-                tipo_etiqueta = ""
-                if str(norma.get('TipoEdicion', '')).strip().lower() == "extraordinaria":
-                    tipo_etiqueta = " (Extraordinaria)"
-                mensaje += f"{i}. {norma['titulo']}{tipo_etiqueta}\n"
-                mensaje += f"{norma.get('Sumilla', '')}\n"
-                mensaje += f"🔗 {norma.get('pdf_url', '')}\n\n"
-            mensaje += "\n"
+        for i, norma in enumerate(aceptados, 1):
+            tipo_etiqueta = ""
+            if str(norma.get('TipoEdicion', '')).strip().lower() == "extraordinaria":
+                tipo_etiqueta = " (Extraordinaria)"
+            mensaje += f"{i}. {norma['titulo']}{tipo_etiqueta}\n"
+            mensaje += f"{norma.get('Sumilla', '')}\n"
+            mensaje += f"🔗 {norma.get('pdf_url', '')}\n\n"
     else:
         if DIA_SEMANA == 0:
             fecha_inicio = (HOY - timedelta(days=3)).strftime('%d/%m/%y')
