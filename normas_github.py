@@ -1169,12 +1169,13 @@ def main():
         else:
             mensaje = f"Buen día equipo, se envía la revisión de normas relevantes al sector {HOY.strftime('%d/%m/%y')}\n\n"
 
-        for norma in aceptados:
+        for i, norma in enumerate(aceptados, 1):
             tipo_etiqueta = ""
             if str(norma.get('TipoEdicion', '')).strip().lower() == "extraordinaria":
                 tipo_etiqueta = " (Extraordinaria)"
-            mensaje += f"{norma['titulo']}{tipo_etiqueta}\n"
-            mensaje += f"{norma.get('Sumilla', '')}\n\n"
+            mensaje += f"{i}. {norma['titulo']}{tipo_etiqueta}\n"
+            mensaje += f"{norma.get('Sumilla', '')}\n"
+            mensaje += f"🔗 {norma.get('drive_link', '')}\n\n"
     else:
         if DIA_SEMANA == 0:
             fecha_inicio = (HOY - timedelta(days=3)).strftime('%d/%m/%y')
