@@ -332,7 +332,8 @@ SECTORES_EXCLUIR = set([normalizar_texto(x) for x in [
     'educacion', 'salud', 'defensa', 'interior', 'mujer',
     'desarrollo social', 'trabajo', 'migraciones', 'cultura',
     'vivienda', 'comunicaciones', 'justicia', 'relaciones exteriores', 'midis', 'midagri','mdlp',
-    'osinfor', 'senamhi', 'trabajo y promocion del empleo', 'sernanp'
+    'osinfor', 'senamhi', 'trabajo y promocion del empleo', 'sernanp', 'desarrollo agrario y riego',
+    'municipio'
 ]])
 
 # Palabras obligatorias ampliadas → al menos una debe aparecer para pasar al TF-IDF
