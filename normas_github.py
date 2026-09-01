@@ -292,11 +292,7 @@ ENTIDADES_SECTOR = set([normalizar_texto(x) for x in [
         # NUEVOS — Ambiente (MINAM y sus organismos adscritos)
     'minam',
     'ministerio del ambiente',
-    'senace',
-    'servicio nacional de certificacion ambiental para las inversiones sostenibles',
-    'sernanp',
-    'senamhi',
-    'servicio nacional de meteorologia e hidrologia',
+    'senace'
 ]])
 
 # Sectores en <h4> que son siempre relevantes
