@@ -306,8 +306,6 @@ SECTORES_PRIORITARIOS = set([normalizar_texto(x) for x in [
     'perupetro',
     'oefa',
         # NUEVOS — Ambiente
-    'ambiente',
-    'ministerio del ambiente',
     'minam',
 ]])
 
@@ -329,7 +327,7 @@ SECTORES_EXCLUIR = set([normalizar_texto(x) for x in [
     'desarrollo social', 'trabajo', 'migraciones', 'cultura',
     'vivienda', 'comunicaciones', 'justicia', 'relaciones exteriores', 'midis', 'midagri','mdlp',
     'osinfor', 'senamhi', 'trabajo y promocion del empleo', 'sernanp', 'desarrollo agrario y riego',
-    'municipio'
+    'municipio', 'SENAMHI
 ]])
 
 # Palabras obligatorias ampliadas → al menos una debe aparecer para pasar al TF-IDF
