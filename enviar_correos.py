@@ -1,36 +1,7 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 =============================================================================
 ENVÍO DE BOLETÍN POR CORREO — lee contactos desde Google Sheets (hoja "Contactos")
 =============================================================================
-
-Uso:
-    python enviar_correos.py --html boletin.html --asunto "Normas del día" --dry-run
-    python enviar_correos.py --html boletin.html --asunto "Normas del día"
-
-Variables de entorno requeridas:
-    GOOGLE_CREDENTIALS_JSON : JSON de la service account (en base64 o en texto plano)
-    SPREADSHEET_ID          : ID del Google Sheet
-    EMAIL_USER              : correo remitente completo (ej. boletin@tudominio.com)
-    EMAIL_PASSWORD          : contraseña de ese correo
-                               (con Gmail debe ser una "contraseña de aplicación" de 16
-                               caracteres; con Titan/HostGator es la contraseña normal
-                               del correo)
-
-Variables de entorno opcionales (proveedor SMTP):
-    SMTP_HOST  : por defecto smtp.titan.email (HostGator/Titan)
-                 usar smtp.gmail.com para Gmail
-    SMTP_PORT  : por defecto 465 (SSL)
-
-(Compatibilidad: si defines GMAIL_USER / GMAIL_APP_PASSWORD en vez de
-EMAIL_USER / EMAIL_PASSWORD, el script también las reconoce.)
-
-Hoja "Contactos", fila 1 = encabezados:
-    A=Nombre | B=Email | C=Activo | D=FechaAgregado | E=Notas | F=UltimoEnvio
-
-La columna B admite VARIOS correos en una sola celda, separados por coma,
-punto y coma o salto de línea (Alt+Enter).
 """
 
 import os
