@@ -1,0 +1,46 @@
+name: Enviar Correos
+
+on:
+  workflow_dispatch:
+    inputs:
+      html_file:
+        description: 'Ruta al archivo HTML a enviar'
+        required: true
+        default: 'plantilla_correo.html'
+      asunto:
+        description: 'Asunto del correo'
+        required: true
+        default: 'Actualización del sector'
+      dry_run:
+        description: 'Modo prueba (true/false) - no envía nada si es true'
+        required: true
+        default: 'true'
+
+jobs:
+  enviar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clonar repo
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install google-api-python-client google-auth google-auth-httplib2
+
+      - name: Ejecutar envío
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          GMAIL_USER: ${{ secrets.GMAIL_USER }}
+          GMAIL_APP_PASSWORD: ${{ secrets.GMAIL_APP_PASSWORD }}
+        run: |
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            python enviar_correos.py --html "${{ github.event.inputs.html_file }}" --asunto "${{ github.event.inputs.asunto }}" --dry-run
+          else
+            python enviar_correos.py --html "${{ github.event.inputs.html_file }}" --asunto "${{ github.event.inputs.asunto }}"
+          fi
