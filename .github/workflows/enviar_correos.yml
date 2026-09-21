@@ -1,0 +1,69 @@
+name: Enviar Correos
+
+on:
+  workflow_dispatch:
+    inputs:
+      html_file:
+        description: 'Ruta al archivo HTML a enviar'
+        required: true
+        default: 'boletin.html'
+      asunto:
+        description: 'Asunto del correo'
+        required: true
+        default: 'Boletín de Normas Legales'
+      dry_run:
+        description: 'Modo prueba - no envía nada si es true'
+        required: true
+        type: choice
+        options: ['true', 'false']
+        default: 'true'
+      remitente:
+        description: 'Nombre visible del remitente'
+        required: false
+        default: 'Boletín de Normas'
+      limite:
+        description: 'Enviar solo a los primeros N contactos (0 = todos)'
+        required: false
+        default: '0'
+
+jobs:
+  enviar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clonar repo
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install --upgrade pip
+          pip install google-api-python-client google-auth google-auth-httplib2
+
+      - name: Ejecutar envío
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          HTML_FILE: ${{ github.event.inputs.html_file }}
+          ASUNTO: ${{ github.event.inputs.asunto }}
+          REMITENTE: ${{ github.event.inputs.remitente }}
+          LIMITE: ${{ github.event.inputs.limite }}
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          EXTRA=""
+          if [ "$DRY_RUN" = "true" ]; then
+            EXTRA="--dry-run"
+          fi
+          python enviar_correos.py \
+            --html "$HTML_FILE" \
+            --asunto "$ASUNTO" \
+            --remitente "$REMITENTE" \
+            --limite "${LIMITE:-0}" \
+            $EXTRA
