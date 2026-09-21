@@ -11,12 +11,6 @@ on:
         description: 'Asunto del correo (se le agrega la fecha automáticamente)'
         required: true
         default: 'Boletín de Normas Legales'
-      dry_run:
-        description: 'Modo prueba - no envía nada si es true'
-        required: true
-        type: choice
-        options: ['true', 'false']
-        default: 'true'
       remitente:
         description: 'Nombre visible del remitente'
         required: false
