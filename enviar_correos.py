@@ -28,8 +28,22 @@ from googleapiclient.discovery import build
 # =============================================================================
 
 HOJA_CONTACTOS = "Contactos"
-RANGO_LECTURA = f"{HOJA_CONTACTOS}!A2:F"
-COLUMNA_ULTIMO_ENVIO = "F"
+RANGO_LECTURA = f"{HOJA_CONTACTOS}!A1:J"   # A1 incluye la fila de encabezados
+COLUMNA_ULTIMO_ENVIO = "J"
+
+# Posición de cada columna en la hoja (A=0, B=1, ...)
+# A: N° | B: EMPRESA | C: RUC | D: TIPO | E: CONTACTO | F: CARGO
+# G: TELÉFONO | H: CORREO ELECTRÓNICO | I: ACTIVO | J: ULTIMOENVIO
+COL_N = 0
+COL_EMPRESA = 1
+COL_RUC = 2
+COL_TIPO = 3
+COL_CONTACTO = 4
+COL_CARGO = 5
+COL_TELEFONO = 6
+COL_CORREO = 7
+COL_ACTIVO = 8
+NUM_COLUMNAS = 10
 
 SMTP_HOST_DEFAULT = "smtp.titan.email"   # HostGator/Titan. Gmail: smtp.gmail.com
 SMTP_PORT_DEFAULT = 465                  # 465 = SSL directo (el que usa este script)
@@ -75,7 +89,8 @@ def conectar_sheets(credentials_raw):
 def leer_contactos(servicio, spreadsheet_id):
     """
     Devuelve una lista de dicts:
-        {"nombre":..., "email":..., "fila": n}
+        {"nombre", "empresa", "ruc", "tipo", "contacto", "cargo",
+         "telefono", "email", "fila"}
     Una celda con varios correos genera varias entradas apuntando a la misma fila.
     """
     log("\n📇 Leyendo hoja 'Contactos'...")
@@ -91,18 +106,24 @@ def leer_contactos(servicio, spreadsheet_id):
             "service account esté compartida como Editor en el Sheet."
         )
 
-    filas = resp.get("values", [])
+    filas = resp.get("values", [])[1:]                 # se omite la fila 1 (encabezados)
     log(f"   📄 Filas con datos: {len(filas)}")
 
     destinatarios = []
     vistos = set()
     inactivos = sin_email = invalidos = duplicados = 0
 
-    for i, fila in enumerate(filas, start=2):          # fila 2 = primera de datos
-        fila = list(fila) + [""] * (6 - len(fila))     # rellenar columnas faltantes
-        nombre = (fila[0] or "").strip()
-        celda_email = (fila[1] or "").strip()
-        activo = (fila[2] or "").strip().upper()
+    for i, fila in enumerate(filas, start=2):                  # fila 2 = primera de datos
+        fila = list(fila) + [""] * (NUM_COLUMNAS - len(fila))  # rellenar columnas faltantes
+        empresa = (fila[COL_EMPRESA] or "").strip()
+        ruc = (fila[COL_RUC] or "").strip()
+        tipo = (fila[COL_TIPO] or "").strip()
+        contacto = (fila[COL_CONTACTO] or "").strip()
+        cargo = (fila[COL_CARGO] or "").strip()
+        telefono = (fila[COL_TELEFONO] or "").strip()
+        celda_email = (fila[COL_CORREO] or "").strip()
+        activo = (fila[COL_ACTIVO] or "").strip().upper()
+        nombre = contacto or empresa
 
         if activo not in ("S", "SI", "SÍ", "Y", "YES", "TRUE", "1"):
             inactivos += 1
@@ -114,7 +135,7 @@ def leer_contactos(servicio, spreadsheet_id):
             continue
 
         for bruto in SEPARADORES.split(celda_email):
-            email = bruto.strip().strip("<>").strip()
+            email = bruto.strip().strip("<>").strip().strip('"').strip()
             if not email:
                 continue
             if not REGEX_EMAIL.match(email):
@@ -126,7 +147,11 @@ def leer_contactos(servicio, spreadsheet_id):
                 duplicados += 1
                 continue
             vistos.add(clave)
-            destinatarios.append({"nombre": nombre, "email": email, "fila": i})
+            destinatarios.append({
+                "nombre": nombre, "empresa": empresa, "ruc": ruc, "tipo": tipo,
+                "contacto": contacto, "cargo": cargo, "telefono": telefono,
+                "email": email, "fila": i,
+            })
 
     log(f"   ✅ Destinatarios válidos: {len(destinatarios)}")
     log(f"   ⏸️  Inactivos (Activo≠S): {inactivos}")
@@ -137,7 +162,7 @@ def leer_contactos(servicio, spreadsheet_id):
 
 
 def marcar_ultimo_envio(servicio, spreadsheet_id, filas, sello):
-    """Escribe la fecha/hora de envío en la columna F de cada fila enviada."""
+    """Escribe la fecha/hora de envío en la columna J de cada fila enviada."""
     if not filas:
         return
     log("\n🕒 Actualizando columna UltimoEnvio...")
