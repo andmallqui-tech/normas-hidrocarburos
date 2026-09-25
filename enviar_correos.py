@@ -64,9 +64,14 @@ CAMPOS_NORMAS = ["captura", "norma", "fecha_pub", "resumen", "enlace",
                  "tipo", "enviar", "enviado"]
 
 # --- Noticias (pestaña nueva): A: ENVIAR | B: TITULAR | C: RESUMEN | D: ENLACE
-# E: FUENTE (opcional) | F: ENVIADO (lo escribe este script)
+# E: FUENTE (opcional) | F: ENVIADO (lo escribe este script) | G: FECHA (AAAA-MM-DD,
+# el día en que se revisó/eligió la noticia; sin esto no se puede enviar)
 HOJA_NOTICIAS = "Noticias"
-CAMPOS_NOTICIAS = ["enviar", "titular", "resumen", "enlace", "fuente", "enviado"]
+CAMPOS_NOTICIAS = ["enviar", "titular", "resumen", "enlace", "fuente", "enviado", "fecha"]
+
+# Solo se envían normas/noticias marcadas con S y cuya fecha (columna "captura" en
+# normas, "fecha" en noticias) coincide con la fecha del boletín. Lo que no se
+# envió ese día caduca: no se acumula ni aparece en boletines de otros días.
 
 VALORES_SI = ("S", "SI", "SÍ", "Y", "YES", "TRUE", "1")
 
@@ -194,9 +199,12 @@ def _rango(hoja, celdas):
     return f"'{hoja}'!{celdas}" if hoja else celdas
 
 
-def leer_seleccion(servicio, spreadsheet_id, hoja, campos, principal, etiqueta, obligatorio=True):
+def leer_seleccion(servicio, spreadsheet_id, hoja, campos, principal, etiqueta,
+                    campo_fecha, fecha_objetivo, obligatorio=True):
     """
-    Devuelve las filas con ENVIAR = S que todavía no tienen fecha en ENVIADO.
+    Devuelve las filas con ENVIAR = S, sin fecha en ENVIADO, y cuya columna
+    `campo_fecha` coincide con `fecha_objetivo` (AAAA-MM-DD). Lo marcado con S
+    de otro día no se incluye: caduca en vez de acumularse.
     Cada elemento es un dict con las claves de `campos` + 'fila'.
     """
     nombre = hoja or "primera pestaña (normas)"
@@ -218,7 +226,7 @@ def leer_seleccion(servicio, spreadsheet_id, hoja, campos, principal, etiqueta, 
 
     filas = resp.get("values", [])[1:]
     elegidas = []
-    ya_enviadas = 0
+    ya_enviadas = sin_fecha = de_otro_dia = 0
     for i, fila in enumerate(filas, start=2):
         fila = list(fila) + [""] * (len(campos) - len(fila))
         item = {c: (fila[k] or "").strip() for k, c in enumerate(campos)}
@@ -230,12 +238,24 @@ def leer_seleccion(servicio, spreadsheet_id, hoja, campos, principal, etiqueta, 
         if not item[principal]:
             log(f"   ⚠️  Fila {i}: marcada con S pero sin '{principal}', se omite")
             continue
+        fecha_fila = item.get(campo_fecha, "").strip()
+        if not fecha_fila:
+            log(f"   ⚠️  Fila {i}: marcada con S pero sin fecha en '{campo_fecha}', se omite")
+            sin_fecha += 1
+            continue
+        if fecha_fila != fecha_objetivo:
+            de_otro_dia += 1
+            continue
         item["fila"] = i
         elegidas.append(item)
 
-    log(f"   ✅ {etiqueta.capitalize()} por enviar (S y sin fecha en ENVIADO): {len(elegidas)}")
+    log(f"   ✅ {etiqueta.capitalize()} por enviar (S, fecha {fecha_objetivo}, sin ENVIADO): {len(elegidas)}")
     if ya_enviadas:
         log(f"   ♻️  Con S pero ya enviadas antes: {ya_enviadas} (no se repiten)")
+    if de_otro_dia:
+        log(f"   🗓️  Con S pero de otra fecha: {de_otro_dia} (caducaron, no se envían)")
+    if sin_fecha:
+        log(f"   ⚠️  Con S pero sin fecha: {sin_fecha} (se omiten hasta que se les ponga fecha)")
     return elegidas
 
 
@@ -591,14 +611,21 @@ def main():
     # --- 2. Conectar y leer normas / noticias / contactos ---
     servicio = conectar_sheets(credenciales)
 
+    fecha_objetivo = fecha_dt.strftime("%Y-%m-%d")
+    log(f"   Fecha del boletín (caduca lo de otros días): {fecha_objetivo}")
+
     normas, noticias = [], []
     if "{{NORMAS}}" in plantilla or "{{NOTICIAS}}" in plantilla:
         normas = leer_seleccion(servicio, spreadsheet_id, HOJA_NORMAS,
-                                CAMPOS_NORMAS, "norma", "normas", obligatorio=True)
+                                CAMPOS_NORMAS, "norma", "normas",
+                                campo_fecha="captura", fecha_objetivo=fecha_objetivo,
+                                obligatorio=True)
         noticias = leer_seleccion(servicio, spreadsheet_id, HOJA_NOTICIAS,
-                                  CAMPOS_NOTICIAS, "titular", "noticias", obligatorio=False)
+                                  CAMPOS_NOTICIAS, "titular", "noticias",
+                                  campo_fecha="fecha", fecha_objetivo=fecha_objetivo,
+                                  obligatorio=False)
         if not normas and not noticias:
-            log("\n⚠️  No hay ninguna norma ni noticia marcada con S. Nada que enviar.")
+            log(f"\n⚠️  No hay normas ni noticias con S del {fecha_objetivo}. Nada que enviar.")
             sys.exit(0)
         html_original = armar_html(plantilla, normas, noticias, fecha_dt)
     else:
@@ -659,8 +686,10 @@ def main():
 
     # --- 5. Envío real ---
     nombre_remitente = args.remitente or usuario.split("@")[0]
+    asunto_final = args.asunto if fecha_larga(fecha_dt) in args.asunto \
+        else f"{args.asunto} - {fecha_larga(fecha_dt)}"
     exitosos, fallidos, filas_ok = enviar_todo(
-        destinatarios, args.asunto, html, imagenes, texto_plano,
+        destinatarios, asunto_final, html, imagenes, texto_plano,
         usuario, password, nombre_remitente, args.pausa,
         smtp_host, smtp_port
     )
