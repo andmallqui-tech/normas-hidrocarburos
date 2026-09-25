@@ -312,8 +312,7 @@ def _enlace_valido(url):
 
 def html_normas(normas):
     if not normas:
-        return ('  <tr><td style="padding:8px 24px 16px 24px; font-size:14px; color:#666666;">'
-                'No hay normas seleccionadas para este boletín.</td></tr>')
+        return ""
     bloques = []
     for n in normas:
         url = _enlace_valido(n["enlace"])
