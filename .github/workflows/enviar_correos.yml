@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       fecha:
-        description: 'Fecha de corrida del scraper (YYYY-MM-DD). Vacío = la más reciente en el Sheet'
+        description: 'Fecha del boletín (YYYY-MM-DD). Solo se envía lo con S de ese día. Vacío = hoy (Lima)'
         required: false
         default: ''
       asunto:
@@ -37,21 +37,10 @@ jobs:
           pip install --upgrade pip
           pip install google-api-python-client google-auth google-auth-httplib2
 
-      # NUEVO: arma el boletín con las normas que el scraper guardó en el Sheet
-      - name: Generar boletín desde el Sheet
-        id: generar
-        env:
-          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
-          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-          FECHA: ${{ github.event.inputs.fecha }}
-        run: |
-          python generar_boletin.py \
-            --plantilla boletin_plantilla.html \
-            --salida boletin_generado.html \
-            --fecha "$FECHA"
-
+      # enviar_correos.py arma el HTML directamente desde la plantilla + el Sheet
+      # (S del día + ENVIADO vacío). Ya no depende de generar_boletin.py.
       - name: Ejecutar envío
-        if: steps.generar.outputs.hay_normas == 'true'
+        id: enviar
         env:
           GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
@@ -60,30 +49,13 @@ jobs:
           SMTP_HOST: ${{ secrets.SMTP_HOST }}
           SMTP_PORT: ${{ secrets.SMTP_PORT }}
           ASUNTO: ${{ github.event.inputs.asunto }}
-          FECHA_TXT: ${{ steps.generar.outputs.fecha_txt }}
+          FECHA: ${{ github.event.inputs.fecha }}
           REMITENTE: ${{ github.event.inputs.remitente }}
           LIMITE: ${{ github.event.inputs.limite }}
-          DRY_RUN: ${{ github.event.inputs.dry_run }}
         run: |
-          EXTRA=""
-          if [ "$DRY_RUN" = "true" ]; then
-            EXTRA="--dry-run"
-          fi
           python enviar_correos.py \
-            --html boletin_generado.html \
-            --asunto "$ASUNTO - $FECHA_TXT" \
+            --html boletin_plantilla.html \
+            --asunto "$ASUNTO" \
+            --fecha "$FECHA" \
             --remitente "$REMITENTE" \
-            --limite "${LIMITE:-0}" \
-            $EXTRA
-
-      - name: Sin normas para enviar
-        if: steps.generar.outputs.hay_normas != 'true'
-        run: echo "No hay normas en el Sheet para esa fecha; no se envió ningún correo."
-
-      # Para revisar el boletín generado (sirve sobre todo en dry-run)
-      - name: Guardar boletín generado
-        if: steps.generar.outputs.hay_normas == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: boletin-generado
-          path: boletin_generado.html
+            --limite "${LIMITE:-0}"
