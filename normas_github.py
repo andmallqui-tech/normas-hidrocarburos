@@ -304,7 +304,6 @@ SECTORES_PRIORITARIOS = set([normalizar_texto(x) for x in [
     'osinergmin',
     'organismo supervisor de la inversion en energia y mineria',
     'perupetro',
-    'oefa',
         # NUEVOS — Ambiente
     'minam',
 ]])
