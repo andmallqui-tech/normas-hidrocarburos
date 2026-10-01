@@ -500,16 +500,6 @@ importacion exportacion petroleo crudo derivados arancel
 autorizacion construccion operacion ducto transporte hidrocarburos
 inscripcion registro agente comercializador combustibles
 
-norma sin relevancia educacion primaria secundaria universidad
-resolucion salud hospital medico enfermera vacuna
-decreto defensa fuerzas armadas militares
-resolucion interior policia nacional orden publico
-norma vivienda construccion urbanismo habilitacion urbana
-resolucion trabajo empleo laboral sindicato convenio
-decreto cultura patrimonio arqueologico museo
-resolucion migraciones extranjeria visa residencia
-norma agriculture ganaderia riego canal
-resolucion pesca acuicultura marina recursos hidrobiologicos
 """
 
 # =============================================================================
@@ -524,18 +514,10 @@ def gestionar_corpus(drive_client, spreadsheet_id, drive_folder_id):
     """
     print("\n🧠 GESTIONANDO CORPUS...")
 
-    # Leer corpus existente o crear desde cero
-    corpus_file_id = drive_client.get_file_by_name(drive_folder_id, 'corpus_hidrocarburos.txt')
-
-    if corpus_file_id:
-        print("   ✅ Corpus existente encontrado en Drive")
-        texto_corpus = drive_client.download_text_file(corpus_file_id)
-        if len(texto_corpus.strip()) < 200:
-            print("   ⚠️ Corpus muy pequeño, reiniciando con corpus inicial enriquecido")
-            texto_corpus = CORPUS_INICIAL
-    else:
-        print("   📝 Corpus no existe — creando con corpus inicial enriquecido")
-        texto_corpus = CORPUS_INICIAL
+    # Se reconstruye SIEMPRE desde CORPUS_INICIAL + feedback (S) del Sheets.
+    # Antes se descargaba el corpus de Drive y se le volvían a sumar los positivos en
+    # cada ejecución: el corpus crecía sin control y se contaminaba.
+    texto_corpus = CORPUS_INICIAL
 
     # Leer feedback de Sheets (columna G = "Relevante S/N")
     try:
@@ -585,72 +567,155 @@ def gestionar_corpus(drive_client, spreadsheet_id, drive_folder_id):
 # FUNCIONES DE EVALUACIÓN
 # =============================================================================
 
+# --- FILTRO v3: palabra completa + PUNTAJE. Reemplaza el bloque v2 (es_sector_*, evaluar_relevancia) ---
+# Requiere en el archivo principal: re, normalizar_texto, cosine_similarity (ya existen).
+def _rx(patrones):
+    """Compila patrones ya normalizados con límite de palabra."""
+    return re.compile(r'\b(?:' + '|'.join(sorted(patrones, key=len, reverse=True)) + r')\b')
+
+# Nombres largos -> siglas (el de OSINERGMIN contiene "mineria" y se confundiría con minería)
+ALIAS = {
+    'organismo supervisor de la inversion en energia y mineria': 'osinergmin',
+    'ministerio de energia y minas': 'minem', 'energia y minas': 'minem',
+    'organismo de evaluacion y fiscalizacion ambiental': 'oefa',
+    'ministerio del ambiente': 'minam',
+    'servicio nacional de certificacion ambiental para las inversiones sostenibles': 'senace',
+}
+def _alias(t):
+    for largo, corto in ALIAS.items():
+        t = t.replace(largo, corto)
+    return t
+
+# Hidrocarburos y combustibles (\w* = cualquier terminación)
+CORE = _rx([
+    r'hidrocarbur\w*', r'petrole\w*', r'petrolifer\w*', r'petroquimic\w*', r'petroperu', r'perupetro',
+    r'gas natural', r'gas licuado\w*', r'glp', r'gnv', r'gnl', r'gnc', r'gasocentro\w*', r'combustibl\w*',
+    r'gasolin\w*', r'gasohol', r'diesel', r'kerosene', r'turbo a1', r'nafta', r'crudo', r'oleoducto\w*',
+    r'gasoducto\w*', r'poliducto\w*', r'refineri\w*', r'banda de precios', r'canon gasifero', r'camisea',
+    r'biocombustibl\w*', r'biodiesel', r'etanol', r'lubricante\w*', r'estaciones? de servicio',
+    r'grifos?', r'fise', r'bonogas', r'consumidor(?:es)? directo\w*', r'planta(?:s)? de abastecimiento',
+    r'planta(?:s)? envasadora\w*', r'planta(?:s)? de fraccionamiento', r'ductos?', r'hidrogeno verde',
+    r'electromovilidad', r'vehiculos? electric\w*', r'estaciones? de carga', r'upstream', r'downstream',
+])
+
+# Infraestructura / sistema eléctrico y renovables (señal fuerte por sí sola)
+INFRA_ENERGIA = _rx([
+    r'\d+ kv', r'kv', r'kilovoltios?', r'subestacion\w*', r'lineas? de transmision', r'enlaces? \d+ kv',
+    r'transmision electrica', r'generacion electrica', r'distribucion electrica', r'energia electrica',
+    r'electricidad', r'sector electrico', r'mercado electrico', r'sistema electrico\w*', r'sein', r'coes',
+    r'concesion(?:es)? electrica\w*', r'ley de concesiones electricas', r'tarifas? electrica\w*',
+    r'tarifas? en barra', r'peaje\w* de transmision', r'hidroelectric\w*', r'termoelectric\w*',
+    r'fotovoltaic\w*', r'parques? eolico\w*', r'centrales? (?:solar|eolica|hidraulica|termica)\w*',
+    r'energia (?:solar|eolica|renovable)\w*', r'energias renovables', r'recursos energeticos renovables',
+    r'rer', r'geotermic\w*', r'autogeneracion', r'cogeneracion', r'electrificacion rural',
+    r'eficiencia energetica', r'transicion energetica', r'matriz energetica', r'sector energetico',
+    r'recursos energeticos', r'hidrogeno',
+    r'concesion(?:es)? de (?:generacion|transmision|distribucion)',
+])
+ENERGIA_GENERAL = _rx([r'energia', r'electric\w*', r'energetic\w*'])
+
+AMBIENTE = _rx([
+    r'ambiental\w*', r'eia', r'eca', r'lmp', r'cambio climatico', r'biodiversidad', r'consulta previa',
+    r'areas naturales protegidas', r'huella de carbono', r'gases de efecto invernadero', r'calidad del aire',
+    r'limites? maximos? permisibles?', r'residuos solidos', r'remediacion', r'pasivos ambientales',
+])
+
+# Gobernanza de los reguladores (OSINERGMIN, OSITRAN, SUNASS, OSIPTEL): decisión tuya, ver INCLUIR_REGULADORES
+REGULADORES = _rx([r'organismos? reguladores? de la inversion privada[a-z ]*', r'consejo directivo de (?:los )?organismos reguladores'])
+INCLUIR_REGULADORES = True
+
+DEBILES = _rx([r'tarifas?', r'concesion\w*', r'lotes?', r'pozos?', r'terminal\w*', r'supervision',
+               r'fiscalizacion', r'regalias?', r'exploracion', r'explotacion', r'yacimientos?',
+               r'licencia de operacion', r'peajes?', r'contratos? de licencia'])
+
+ENTIDAD_FUERTE = _rx([r'osinergmin', r'perupetro', r'petroperu', r'dgh', r'\d{4} os (?:cd|gg|grt|gart|gsm|gse|dsr|gfhl|gfgn)'])
+ENTIDAD_AMPLIA = _rx([r'minem', r'oefa', r'minam', r'senace', r'\d{4} em', r'\d{4} minem', r'\d{4} oefa', r'\d{4} minam'])
+
+SECTOR_PRIORITARIO = _rx([r'energia y minas', r'energia minas', r'minem', r'osinergmin', r'perupetro',
+                          r'oefa', r'minam', r'ambiente', r'senace'])
+SECTOR_SECUNDARIO = _rx([r'decretos? de urgencia', r'presidencia del consejo de ministros', r'pcm',
+                         r'organismos? tecnicos? especializados?', r'organismos? reguladores?',
+                         r'economia y finanzas', r'mef', r'transportes', r'autoridad portuaria'])
+# 'vivienda' y 'comunicaciones' (MTC) ya NO se excluyen: pueden traer GNV, electromovilidad, gas domiciliario.
+# Igual necesitan señal de tema para pasar.
+SECTOR_EXCLUIR = _rx([
+    r'educacion', r'salud', r'defensa', r'interior', r'mujer', r'desarrollo social', r'trabajo',
+    r'migraciones', r'cultura', r'justicia', r'relaciones exteriores',
+    r'midis', r'midagri', r'mdlp', r'osinfor', r'senamhi', r'sernanp', r'desarrollo agrario',
+    r'jurado nacional', r'gobiernos? locales?', r'gobiernos? regional\w*', r'municipalidad\w*', r'municipio\w*',
+    r'universidad\w*', r'sunedu', r'poder judicial', r'ministerio publico', r'congreso', r'onpe', r'reniec',
+    r'essalud', r'sunafil', r'contraloria', r'defensoria', r'sunarp',
+])
+
+# Ruido detectado en el TEXTO (por si el sector viene vacío o con otro nombre)
+RUIDO_LOCAL = _rx([r'universidad\w*', r'municipalidad\w*', r'ordenanza\w*', r'distrital', r'sunedu', r'becas?',
+                   r'estudiantes?', r'docentes?', r'colegio\w*', r'hospital\w*', r'policia\w*'])
+MINERIA = _rx([r'mineri\w*', r'miner[oa]s?', r'petitorios?', r'reinfo', r'ingemmet', r'relaves?', r'mineral\w*'])
+ADMIN = re.compile(r'\b(?:designan|designar|encargan|encargar|nombran|aceptan? (?:la )?renuncia|'
+                   r'da(?:n)? por concluid\w+|autorizan? viaje|otorgan? licencia|declaran vacante|cesan|'
+                   r'ratifican designacion|felicitan)\b')
+UMBRAL = 3.0
+
+def _distintos(rx, texto, cap):
+    return min(len({m.group(0)[:6] for m in rx.finditer(texto)}), cap)
+
+def _sim_max(vectorizador, X, texto):
+    """Máxima similitud contra TODAS las filas del corpus."""
+    if vectorizador is None or X is None:
+        return 0.0
+    try:
+        return float(cosine_similarity(X, vectorizador.transform([texto])).max())
+    except Exception:
+        return 0.0
+
 def es_sector_prioritario(sector):
-    sector_norm = normalizar_texto(sector)
-    for s in SECTORES_PRIORITARIOS:
-        if s in sector_norm:
-            return True, s
-    return False, None
+    m = SECTOR_PRIORITARIO.search(normalizar_texto(sector))
+    return (True, m.group(0)) if m else (False, None)
 
 def es_sector_secundario(sector):
-    sector_norm = normalizar_texto(sector)
-    for s in SECTORES_SECUNDARIOS:
-        if s in sector_norm:
-            return True, s
-    return False, None
+    m = SECTOR_SECUNDARIO.search(normalizar_texto(sector))
+    return (True, m.group(0)) if m else (False, None)
 
 def es_entidad_sector(texto):
-    """Detecta si MINEM, OSINERGMIN, PERUPETRO u OEFA aparecen en cualquier parte del texto"""
-    texto_norm = normalizar_texto(texto)
-    for entidad in ENTIDADES_SECTOR:
-        if entidad in texto_norm:
-            return True, entidad
-    return False, None
+    t = _alias(normalizar_texto(texto))
+    m = ENTIDAD_FUERTE.search(t) or ENTIDAD_AMPLIA.search(t)
+    return (True, m.group(0)) if m else (False, None)
 
-def evaluar_relevancia(texto_candidato, sector, vectorizador, X_base):
-    texto_norm = normalizar_texto(texto_candidato)
-    sector_norm = normalizar_texto(sector)
+def evaluar_relevancia(texto_candidato, sector, vectorizador=None, X_base=None):
+    """texto_candidato = f"{titulo} {sumilla}" (SIN el sector). Devuelve (bool, razon)."""
+    t = _alias(normalizar_texto(texto_candidato))
+    s = normalizar_texto(sector)
+    p, why = 0.0, []
 
-    # NIVEL 1: Excluir sectores irrelevantes siempre
-    for s in SECTORES_EXCLUIR:
-        if s in sector_norm:
-            return False, f"Sector excluido: {s}"
+    n_core = _distintos(CORE, t, 2)
+    n_infra = _distintos(INFRA_ENERGIA, t, 2)
+    fuerte = bool(ENTIDAD_FUERTE.search(t))
+    tema_fuerte = n_core >= 2 or n_infra > 0 or fuerte
+    if n_core:  p += 3 * n_core;  why.append(f"hidrocarburos x{n_core}")
+    if n_infra: p += 3 * n_infra; why.append(f"energia/infra x{n_infra}")
+    if fuerte:  p += 4;           why.append("entidad fuerte")
+    elif ENTIDAD_AMPLIA.search(t): p += 2; why.append("entidad amplia")
+    if INCLUIR_REGULADORES and REGULADORES.search(t): p += 3; why.append("reguladores")
+    if es_sector_prioritario(sector)[0]: p += 1.5; why.append("sector prioritario")
+    elif es_sector_secundario(sector)[0]: p += 0.5; why.append("sector secundario")
+    n = _distintos(ENERGIA_GENERAL, t, 2)
+    if n: p += n; why.append(f"energia general x{n}")
+    n = _distintos(AMBIENTE, t, 2)
+    if n: p += n; why.append(f"ambiente x{n}")
+    if p >= 1:                                   # señales débiles y TF-IDF SOLO refuerzan
+        n = _distintos(DEBILES, t, 3)
+        if n: p += 0.5 * n; why.append(f"debiles x{n}")
+        sim = _sim_max(vectorizador, X_base, t)
+        if sim >= 0.30: p += 2.5; why.append(f"tfidf {sim:.2f}")
+        elif sim >= 0.15: p += 1.5; why.append(f"tfidf {sim:.2f}")
 
-    # NIVEL 2: Entidad del sector en título o sumilla → aceptar siempre sin más análisis
-    encontrada, entidad = es_entidad_sector(texto_candidato)
-    if encontrada:
-        return True, f"✅ Entidad del sector: {entidad}"
+    if SECTOR_EXCLUIR.search(s) and not fuerte:      p -= 6; why.append("sector excluido")
+    if RUIDO_LOCAL.search(t) and not tema_fuerte:    p -= 3; why.append("ruido local/educacion")
+    if MINERIA.search(t) and not tema_fuerte:        p -= 3; why.append("mineria sin hidrocarburos")
+    if ADMIN.search(t[:250]):                        p -= 5; why.append("personal/viaje")
 
-    # NIVEL 3: Verificar palabra obligatoria
-    tiene_obligatoria = False
-    for palabra in PALABRAS_OBLIGATORIAS:
-        if palabra in texto_norm:
-            tiene_obligatoria = True
-            break
-
-    if not tiene_obligatoria:
-        # Sector secundario con tokens técnicos → umbral más permisivo
-        es_sec, _ = es_sector_secundario(sector)
-        count_tokens = sum(1 for token in tokens_tecnicos if token in texto_norm)
-        if es_sec and count_tokens >= 2:
-            return True, f"✅ Sector secundario + {count_tokens} tokens técnicos"
-        return False, "Sin palabra obligatoria ni entidad del sector"
-
-    # NIVEL 4: Análisis TF-IDF
-    count_tokens = sum(1 for token in tokens_tecnicos if token in texto_norm)
-    try:
-        Y = vectorizador.transform([texto_norm])
-        tfidf_score = float(cosine_similarity(X_base, Y)[0][0])
-    except:
-        tfidf_score = 0.0
-
-    relevante = count_tokens >= 2 or tfidf_score >= 0.15
-    razon = (
-        f"✅ {count_tokens} tokens, TF-IDF:{tfidf_score:.3f}"
-        if relevante else
-        f"❌ {count_tokens} tokens, TF-IDF:{tfidf_score:.3f}"
-    )
-    return relevante, razon
+    ok = p >= UMBRAL
+    return ok, f"{'✅' if ok else '❌'} {p:.1f} pts [{', '.join(why) or 'sin señales'}]"
 
 # =============================================================================
 # RESOLUCIÓN DE URL DE PDF
@@ -835,7 +900,7 @@ def extraer_normas(driver, fecha_obj, es_extraordinaria=False):
                 stable = 0
                 last_count = count
 
-            if stable >= 3:
+            if stable >= 5:
                 print("   ✅ Contenido estable, finalizando scroll")
                 break
 
@@ -957,9 +1022,12 @@ def extraer_normas(driver, fecha_obj, es_extraordinaria=False):
                             pdf_url = complete_href(a['href'])
                             break
 
+                if not pdf_url and titulo_tag:
+                    a_tit = titulo_tag.find("a", href=True)
+                    if a_tit:
+                        pdf_url = complete_href(a_tit['href'])
                 if not pdf_url:
-                    print(f"   ⚠️ Artículo {idx} sin PDF URL, omitiendo")
-                    continue
+                    print(f"   ⚠️ Artículo {idx} sin URL alguna, se conserva sin link: {titulo[:50]}")
 
                 texto_completo = f"{sector} {titulo} {sumilla}"
                 nombre_archivo = sanitize_filename(titulo or sumilla[:60]) + ".pdf"
@@ -1103,7 +1171,8 @@ def main():
         key = (
             c['titulo'].strip().lower(),
             c.get('FechaPublicacion', ''),
-            c.get('TipoEdicion', '').strip().lower()
+            c.get('TipoEdicion', '').strip().lower(),
+            c.get('pdf_url', '')
         )
         if key not in vistos and key[0]:
             vistos.add(key)
@@ -1120,23 +1189,17 @@ def main():
     prioritarios = []
 
     for i, c in enumerate(candidatos_unicos, 1):
-        # Nivel 1: sector prioritario en <h4>
-        es_prioritario, sector_match = es_sector_prioritario(c['sector'])
-
-        if es_prioritario:
+        es_prioritario, _ = es_sector_prioritario(c['sector'])
+        relevante, razon = evaluar_relevancia(
+            f"{c['titulo']} {c['Sumilla']}", c['sector'], vectorizador, X_base
+        )
+        if relevante:
             aceptados.append(c)
-            prioritarios.append(c)
-            print(f"   [{i}/{len(candidatos_unicos)}] ⭐ SECTOR PRIORITARIO: {c['titulo'][:60]}")
+            if es_prioritario:
+                prioritarios.append(c)
+            print(f"   [{i}/{len(candidatos_unicos)}] ✅ ({razon}): {c['titulo'][:60]}")
         else:
-            # Niveles 2-4: entidad en texto, palabras obligatorias, TF-IDF
-            relevante, razon = evaluar_relevancia(
-                c['texto_completo'], c['sector'], vectorizador, X_base
-            )
-            if relevante:
-                aceptados.append(c)
-                print(f"   [{i}/{len(candidatos_unicos)}] ✅ RELEVANTE ({razon}): {c['titulo'][:60]}")
-            else:
-                print(f"   [{i}/{len(candidatos_unicos)}] ❌ DESCARTADO ({razon}): {c['titulo'][:60]}")
+            print(f"   [{i}/{len(candidatos_unicos)}] ❌ ({razon}) [{c['sector'][:25]}]: {c['titulo'][:60]}")
 
     print(f"\n✅ TOTAL ACEPTADOS: {len(aceptados)}")
 
@@ -1179,11 +1242,8 @@ def main():
     # -------------------------------------------------------------------------
     # PASO 11: ACTUALIZAR CORPUS con normas aceptadas del día
     # -------------------------------------------------------------------------
-    if aceptados:
-        print("\n🧠 PASO 11: ACTUALIZANDO CORPUS CON NORMAS DE HOY...")
-        nuevo_contenido = "\n".join([n['texto_completo'] for n in aceptados])
-        corpus_actualizado = texto_base + "\n" + nuevo_contenido
-        drive_client.upload_text_file(DRIVE_FOLDER_ID, 'corpus_hidrocarburos.txt', corpus_actualizado)
+    # PASO 11 desactivado: agregar al corpus lo "aceptado" sin validar realimentaba los falsos
+    # positivos. El corpus ahora se aprende SOLO de la columna G (S) del Sheets.
 
     # -------------------------------------------------------------------------
     # PASO 12: TELEGRAM
