@@ -490,40 +490,52 @@ def construir_mensaje(remitente, nombre_remitente, destino, asunto,
 # ENVÍO
 # =============================================================================
 
+def conectar_smtp(host, port, usuario, password, contexto):
+    """Conecta y autentica. Puerto 465 = SSL directo; otros (ej. 587 Brevo) = STARTTLS."""
+    if port == 465:
+        servidor = smtplib.SMTP_SSL(host, port, context=contexto, timeout=60)
+    else:
+        servidor = smtplib.SMTP(host, port, timeout=60)
+        servidor.ehlo()
+        servidor.starttls(context=contexto)
+        servidor.ehlo()
+    servidor.login(usuario, password)
+    return servidor
+
+
 def enviar_todo(destinatarios, asunto, html, imagenes, texto_plano,
-                usuario, password, nombre_remitente, pausa, smtp_host, smtp_port):
+                usuario, password, nombre_remitente, pausa, smtp_host, smtp_port,
+                email_from=None):
+    email_from = email_from or usuario
     exitosos, fallidos, filas_ok = [], [], []
     contexto = ssl.create_default_context()
 
     log(f"\n📤 Iniciando envío a {len(destinatarios)} destinatarios...")
     log(f"   Servidor SMTP: {smtp_host}:{smtp_port}")
     try:
-        servidor = smtplib.SMTP_SSL(smtp_host, smtp_port, context=contexto, timeout=60)
-        servidor.login(usuario, password)
+        servidor = conectar_smtp(smtp_host, smtp_port, usuario, password, contexto)
         log("   ✅ Autenticado correctamente")
     except smtplib.SMTPAuthenticationError:
         raise RuntimeError(
             f"El servidor {smtp_host} rechazó las credenciales.\n"
-            "   • Revisa que EMAIL_USER sea el correo completo (usuario@tudominio.com).\n"
-            "   • Revisa que EMAIL_PASSWORD sea correcta (para Gmail debe ser una "
-            "contraseña de aplicación de 16 caracteres, no la normal).\n"
+            "   • Brevo: EMAIL_USER es el \"Login\" SMTP de Brevo (termina en @smtp-brevo.com),\n"
+            "     NO tu correo; EMAIL_PASSWORD es la clave SMTP (SMTP key), no la contraseña de tu cuenta.\n"
             "   • Pégala sin espacios."
         )
 
     try:
         for i, d in enumerate(destinatarios, 1):
-            mensaje = construir_mensaje(usuario, nombre_remitente, d["email"],
+            mensaje = construir_mensaje(email_from, nombre_remitente, d["email"],
                                         asunto, html, texto_plano, imagenes)
             enviado = False
             for intento in range(1, REINTENTOS + 2):
                 try:
-                    servidor.sendmail(usuario, [d["email"]], mensaje.as_string())
+                    servidor.sendmail(email_from, [d["email"]], mensaje.as_string())
                     enviado = True
                     break
                 except (smtplib.SMTPServerDisconnected, smtplib.SMTPConnectError):
                     log(f"      ↻ Reconectando (intento {intento})...")
-                    servidor = smtplib.SMTP_SSL(smtp_host, smtp_port, context=contexto, timeout=60)
-                    servidor.login(usuario, password)
+                    servidor = conectar_smtp(smtp_host, smtp_port, usuario, password, contexto)
                 except smtplib.SMTPRecipientsRefused:
                     break
                 except Exception as e:
@@ -579,6 +591,7 @@ def main():
     spreadsheet_id = os.getenv("SPREADSHEET_ID")
     usuario = (os.getenv("EMAIL_USER") or os.getenv("GMAIL_USER") or "").strip()
     password = (os.getenv("EMAIL_PASSWORD") or os.getenv("GMAIL_APP_PASSWORD") or "").replace(" ", "")
+    email_from = (os.getenv("EMAIL_FROM") or usuario).strip()
     smtp_host = (os.getenv("SMTP_HOST") or SMTP_HOST_DEFAULT).strip()
     smtp_port = int(os.getenv("SMTP_PORT") or SMTP_PORT_DEFAULT)
 
@@ -685,13 +698,18 @@ def main():
         return
 
     # --- 5. Envío real ---
-    nombre_remitente = args.remitente or usuario.split("@")[0]
+    if not REGEX_EMAIL.match(email_from) or email_from.lower().endswith("@smtp-brevo.com"):
+        log(f"\n❌ El remitente (From) '{email_from}' no es válido.")
+        log("   Define el secret EMAIL_FROM con tu correo remitente validado en Brevo.")
+        sys.exit(1)
+    log(f"   Remitente (From): {email_from}")
+    nombre_remitente = args.remitente or email_from.split("@")[0]
     asunto_final = args.asunto if fecha_larga(fecha_dt) in args.asunto \
         else f"{args.asunto} - {fecha_larga(fecha_dt)}"
     exitosos, fallidos, filas_ok = enviar_todo(
         destinatarios, asunto_final, html, imagenes, texto_plano,
         usuario, password, nombre_remitente, args.pausa,
-        smtp_host, smtp_port
+        smtp_host, smtp_port, email_from
     )
 
     # --- 6. Marcar en el Sheet ---
