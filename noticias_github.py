@@ -37,7 +37,7 @@ import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 from email.utils import parsedate_to_datetime
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlsplit, urlunsplit, parse_qsl, urlencode
 
 import time
 import requests
@@ -47,8 +47,9 @@ from googleapiclient.discovery import build
 
 try:                                   # pip install googlenewsdecoder (está en requirements.txt)
     from googlenewsdecoder import gnewsdecoder
-except ImportError:
+except Exception as _e:               # ImportError, pero también incompatibilidades (selectolax>=1.0)
     gnewsdecoder = None
+    print(f"⚠️  googlenewsdecoder no se pudo importar: {type(_e).__name__}: {str(_e)[:120]}", flush=True)
 
 # Reutiliza el filtro y el envío a Telegram del scraper de normas (no se modifica ese archivo)
 from normas_github import evaluar_relevancia, enviar_telegram, normalizar_texto, _alias
@@ -180,9 +181,9 @@ EXTRANJERO = re.compile(r"\b(?:estados unidos|eeuu|ee uu|europa|europea|rusia|ru
                         r"cuba|malvinas|londres|irani|senegal|oran|villazon|la quiaca|"
                         r"ministerio de hidrocarburos|ministro de hidrocarburos|unam|asea|milei|"
                         r"cerro dragon|vaca muerta|portugal|halliburton)\b")
-PERU = re.compile(r"\b(?:peru|peruano|peruana|peruanos|lima|callao|piura|talara|cusco|arequipa|loreto|"
-                  r"ucayali|tumbes|junin|camisea|minem|osinergmin|perupetro|petroperu|oefa|senace|"
-                  r"minam|pluspetrol|tgp|calidda|fise|proinversion|coes|energia y minas|lote \d+|lote [ivx]+)\b")
+PERU = re.compile(r"\b(?:peru|peruano|peruana|peruanos|lima|callao|piura|talara|cusco|arequipa|loreto|tacna|"
+                  r"ucayali|tumbes|junin|camisea|minem|osinergmin|perupetro|petroperu|oefa|senace|indecopi|"
+                  r"minam|pluspetrol|tgp|calidda|fise|proinversion|coes|energia y minas|lotes? \d+|lotes? [ivx]+)\b")
 # Diarios peruanos: si el titular no menciona a Perú pero viene de uno de estos, se acepta
 FUENTES_PERUANAS = ["gestion", "el comercio", "la republica", "rpp", "andina", "peru21", "correo",
                     "exitosa", "energiminas", "rumbo minero", "proactivo", "canal n", "el peruano",
@@ -208,15 +209,42 @@ TEMA_PERU = re.compile(r"\b(?:balon(?:es)? de gas|escasez de (?:gas|gasolina|com
                        r"(?:gas|combustibles?)|restablecimiento (?:de|del) (?:gas|suministro))\b")
 REORG_MINEM = (re.compile(r"\breorganiz\w*"), re.compile(r"\bminem\b|energia y minas"))
 # Sector peruano que evaluar_relevancia (hecho para títulos de normas) no puntúa: +3 una sola vez
-VOCAB_PERU = re.compile(r"\b(?:lote \d+|oleoducto norperuano|talara|balon(?:es)? de (?:gas|glp)|gas domiciliario|"
+VOCAB_PERU = re.compile(r"\b(?:lotes? \d+|tgp|reguladores?|oleoducto norperuano|talara|balon(?:es)? de (?:gas|glp)|gas domiciliario|"
                         r"calidda|contugas|pluspetrol|petrotal|canon (?:petrolero|gasifero)|gas de camisea|"
                         r"parque eolico|gigante eolico|energia renovable|energias renovables)\b")
 # Minem: reorganización y lo que la acompaña (destrabar inversiones, meritocracia)
 REORG_MINEM = (re.compile(r"\b(?:reorganiz\w*|destrab\w*|meritocr\w*)\b"), re.compile(r"\bminem\b|energia y minas"))
 # Notas diarias de precios: son la misma noticia aunque cambie la fecha
-PRECIOS_DIA = re.compile(r"\b(?:precios? (?:del? )?(?:gnv|glp|gasolina|combustible\w*|diesel)|"
-                         r"cuanto (?:esta|cuesta) la gasolina|gasolina mas (?:barata|cara)|precios? de (?:la )?gasolina)\b")
+_PRECIO_TEMA = re.compile(r"\b(?:gasolina\w*|gnv|glp|diesel|combustibles?)\b")
+_PRECIO_PALABRA = re.compile(r"\b(?:precios?|cuanto (?:esta|cuesta|cuestan)|mas barata|mas cara)\b")
+_PRECIO_DIA = re.compile(r"\b(?:hoy|lunes|martes|miercoles|jueves|viernes|sabado|domingo|\d{1,2} de [a-z]+)\b")
+
+
+class _PrecioDia:
+    """Nota diaria de precios de combustibles ('...precios... hoy, lunes 5 de octubre'). Una nota de política
+    como 'Indecopi ante pico de precios de combustibles' NO califica (no trae referencia al día)."""
+    @staticmethod
+    def search(t):
+        return bool(_PRECIO_TEMA.search(t) and _PRECIO_PALABRA.search(t) and _PRECIO_DIA.search(t))
+
+
+PRECIOS_DIA = _PrecioDia()
+# Precio internacional del crudo (Brent/OPEP/Ormuz): mueve los precios locales y SÍ lo enviaste (Infobae, 29/09).
+# No se trata como "extranjera" ni exige señal de Perú. Ojo: solo el mercado, no noticias de otros países.
+MERCADO_INTL = re.compile(r"\b(?:precio del petroleo|precios del petroleo|petroleo (?:brent|wti)|brent|wti|opep|"
+                          r"estrecho de ormuz|barril(?:es)? de petroleo)\b")
 AJUSTE_NO_SECTOR, AJUSTE_TEMA, AJUSTE_SIN_PERU, AJUSTE_EXTRANJERO, AJUSTE_VOCAB = 5.0, 3.0, 2.5, 4.0, 3.0
+# Servicio al consumidor / cobertura de masas: no van en un boletín sectorial (ninguna se envió en 12 días)
+SERVICIO = re.compile(r"\b(?:clases (?:virtuales|presenciales)|minedu|colegios?|bono\b|taxistas?|cuanto cuesta|"
+                      r"pronostico|corte de luz|feriados?|horario de atencion)\b")
+AJUSTE_SERVICIO = 6.0
+# Temas que el boletín sí publica (según lo enviado): regulación, contratos/lotes, proyectos, mercado, reorganización.
+# NO decide si entra (eso lo hace el puntaje); solo sube su prioridad dentro del tope de MAX_NOTICIAS.
+TEMA_EDITORIAL = re.compile(r"\b(?:osinergmin|indecopi|reguladores?|pcm|concursos?|adenda\w*|contratos?|convenios?|"
+                            r"lotes? \d+|decretos? supremos?|concesion\w*|licitacion\w*|proinversion|perupetro|"
+                            r"gasoducto\w*|refineria|talara|masificacion|siete regiones|exploracion|reservas|"
+                            r"cuenca|mercado de combustibles|reorganiz\w*|calidda|tgp|camisea)\b")
+BONO_EDITORIAL = 2.0
 GRIS_MIN = 1.0           # entre GRIS_MIN y el umbral (3.0) y sin señal extranjera: "revisar" en Telegram
 GRISES = []
 
@@ -245,14 +273,25 @@ def evaluar_noticia(titular, fuente="", fuente_url=""):
         pts += AJUSTE_TEMA; motivos.append(f"reorganización Minem +{AJUSTE_TEMA:g}")
     if VOCAB_PERU.search(t):
         pts += AJUSTE_VOCAB; motivos.append(f"vocabulario del sector +{AJUSTE_VOCAB:g}")
-    extranjera = bool(EXTRANJERO.search(t) and not PERU.search(t))
-    if extranjera:
+    mercado = bool(MERCADO_INTL.search(t))
+    if mercado:
+        motivos.append("mercado internacional del petróleo")
+    extranjera = bool(EXTRANJERO.search(t) and not PERU.search(t)) and not mercado
+    if mercado:
+        pass
+    elif extranjera:
         pts -= AJUSTE_EXTRANJERO; motivos.append(f"extranjera -{AJUSTE_EXTRANJERO:g}")
     elif not (PERU.search(t) or TEMA_PERU.search(t) or VOCAB_PERU.search(t)) and not es_fuente_peruana(fuente, fuente_url):
         pts -= AJUSTE_SIN_PERU; motivos.append(f"sin señal de Perú -{AJUSTE_SIN_PERU:g}")
 
+    if PRECIOS_DIA.search(t) or SERVICIO.search(t):
+        pts -= AJUSTE_SERVICIO; motivos.append(f"servicio al consumidor -{AJUSTE_SERVICIO:g}")
+
     ok = pts >= 3.0
-    evaluar_noticia.gris = (not ok) and (not extranjera) and pts >= GRIS_MIN
+    txt = " ".join(motivos)
+    # zona gris: dudosas útiles. Se excluyen las que ya se sabe que son ruido (electoral, minería, extranjera, redes)
+    ruido = extranjera or any(k in txt for k in ("no sectorial", "mineria", "ruido local", "servicio al consumidor"))
+    evaluar_noticia.gris = (not ok) and (not ruido) and pts >= GRIS_MIN
     return ok, f"{'✅' if ok else '❌'} {pts:.1f} pts [{', '.join(x for x in motivos if x) or 'sin señales'}]"
 
 
@@ -277,9 +316,9 @@ def filtrar_relevantes(items):
 # Se busca el nombre como texto dentro de la fuente que informa Google (sin tildes, minúsculas).
 FUENTES_TIER = {
     3: ["energiminas", "rumbo minero", "gestion", "el comercio", "andina", "reuters",
-        "bloomberg", "semana economica"],
-    2: ["la republica", "rpp", "infobae", "el peruano", "peru21", "proactivo", "minería y energía",
-        "mineria y energia", "convoca", "ojo publico"],
+        "bloomberg", "semana economica", "gob pe", "el peruano", "el gas noticias"],
+    2: ["la republica", "rpp", "infobae", "peru21", "proactivo", "minería y energía",
+        "mineria y energia", "convoca", "ojo publico", "desde adentro", "desdeadentro"],
     0: ["msn", "yahoo", "facebook", "youtube", "tiktok", "twitter", "x.com", "dailyhunt", "newsbreak"],
 }
 TIER_DEFECTO = 1
@@ -405,9 +444,17 @@ MAX_POR_ENTIDAD = 4      # que una sola entidad (p. ej. Petroperú) no ocupe tod
 ENTIDADES_TOPE = ["petroperu", "perupetro", "osinergmin", "minem", "oefa", "camisea"]
 
 
+def prioridad(n):
+    """Puntaje + tema editorial + calidad del diario + algo de cobertura (tope 3 diarios).
+    Antes se ordenaba por cobertura primero: una nota de precios en 9 diarios le ganaba a una adenda en 1."""
+    pts = float(n["puntaje"].split()[0])
+    tema = BONO_EDITORIAL if TEMA_EDITORIAL.search(normalizar_texto(n["titular"])) else 0.0
+    return pts + tema + tier_fuente(n.get("fuente", "")) * 0.5 + min(n.get("cobertura", 1), 3) * 0.5
+
+
 def ordenar_y_limitar(noticias):
     """Más diarios la publicaron = más importante; empata el puntaje. Máx. MAX_POR_ENTIDAD por entidad."""
-    orden = sorted(noticias, key=lambda n: (n.get("cobertura", 1), float(n["puntaje"].split()[0])), reverse=True)
+    orden = sorted(noticias, key=prioridad, reverse=True)
     cuenta, final, omitidas = {}, [], 0
     for n in orden:
         t = normalizar_texto(n["titular"])
@@ -436,6 +483,41 @@ def resolver_url(link):
     except Exception as e:
         log(f"      ⚠️  No se pudo resolver el enlace: {e}")
     return link
+
+
+_TRACK = {"ref", "outputtype", "oc", "fbclid", "gclid", "source", "mc_cid", "mc_eid", "igshid", "amp"}
+
+
+def limpiar_url(url):
+    """Quita rastreadores (?ref=rpp, ?outputType=amp-type, utm_*...) y el #fragmento. Conserva el resto."""
+    try:
+        u = urlsplit(url)
+        q = [(k, v) for k, v in parse_qsl(u.query, keep_blank_values=True)
+             if k.lower() not in _TRACK and not k.lower().startswith("utm_")]
+        return urlunsplit((u.scheme, u.netloc, u.path, urlencode(q), ""))
+    except Exception:
+        return url
+
+
+_CACHE_CORTOS = {}
+
+
+def acortar(url, largo_max=60):
+    """Acorta con is.gd (o TinyURL si falla). Si no se puede, devuelve el enlace tal cual. Solo para Telegram."""
+    if len(url) <= largo_max or os.getenv("NO_ACORTAR"):
+        return url
+    if url in _CACHE_CORTOS:
+        return _CACHE_CORTOS[url]
+    for api in ("https://is.gd/create.php?format=simple&url={}", "https://tinyurl.com/api-create.php?url={}"):
+        try:
+            r = requests.get(api.format(quote_plus(url)), headers=HEADERS_HTTP, timeout=8)
+            corto = r.text.strip()
+            if r.ok and corto.startswith("http") and len(corto) < len(url):
+                _CACHE_CORTOS[url] = corto
+                return corto
+        except Exception:
+            continue
+    return url
 
 
 def _limpiar(t):
@@ -477,18 +559,63 @@ def resumen_desde_html(html_bytes, titular):
     return _recortar(" ".join(parrafos[:2])) if parrafos else ""
 
 
+_FECHA_META = ({"property": "article:published_time"}, {"name": "article:published_time"},
+               {"itemprop": "datePublished"}, {"name": "date"}, {"property": "og:published_time"})
+TITULAR_GENERICO = re.compile(r"puede reproducirse|todos los derechos reservados|^agencia andina$|^noticias?$", re.I)
+
+
+def fecha_desde_html(html_bytes):
+    """Fecha de publicación REAL según la página (Google a veces re-fecha notas viejas). None si no la encuentra."""
+    soup = BeautifulSoup(html_bytes, "html.parser")
+    candidatos = []
+    for attrs in _FECHA_META:
+        tag = soup.find("meta", attrs=attrs)
+        if tag and tag.get("content"):
+            candidatos.append(tag["content"])
+    t = soup.find("time", attrs={"datetime": True})
+    if t:
+        candidatos.append(t["datetime"])
+    for sc in soup.find_all("script", type="application/ld+json"):
+        m = re.search(r'"datePublished"\s*:\s*"([^"]+)"', sc.string or sc.get_text() or "")
+        if m:
+            candidatos.append(m.group(1))
+    for c in candidatos:
+        m = re.match(r"\s*(\d{4})-(\d{2})-(\d{2})", c)
+        if m:
+            try:
+                return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            except ValueError:
+                pass
+    return None
+
+
+def titular_desde_html(html_bytes):
+    soup = BeautifulSoup(html_bytes, "html.parser")
+    tag = soup.find("meta", attrs={"property": "og:title"})
+    return _limpiar(tag.get("content")) if tag and tag.get("content") else ""
+
+
 def enriquecer(n):
     """Reemplaza el enlace de Google por el real y agrega n['resumen'] (vacío si no se pudo)."""
     n["resumen"] = ""
     n["_enriquecida"] = True
-    n["enlace"] = resolver_url(n["enlace"])
+    n["enlace"] = limpiar_url(resolver_url(n["enlace"]))
     if "news.google.com" in n["enlace"]:
         log(f"      ⚠️  Sin enlace real, no se extrae resumen: {n['titular'][:50]}")
         return
     try:
         r = requests.get(n["enlace"], headers=HEADERS_WEB, timeout=15)
         r.raise_for_status()
+        if TITULAR_GENERICO.search(n["titular"]):          # p. ej. Andina: "Este contenido puede reproducirse..."
+            nuevo = titular_desde_html(r.content)
+            if nuevo and not TITULAR_GENERICO.search(nuevo):
+                n["titular"] = nuevo
         n["resumen"] = resumen_desde_html(r.content, n["titular"])
+        real = fecha_desde_html(r.content)
+        if real:
+            n["fecha_real"] = real
+            if real < FECHA_DESDE - timedelta(days=2):    # holgura: notas actualizadas un día después
+                n["obsoleta"] = True
     except Exception as e:
         log(f"      ⚠️  No se pudo leer la página ({type(e).__name__}): {n['titular'][:50]}")
     time.sleep(1)
@@ -655,7 +782,7 @@ def bloque_grises(max_n=6):
         if k in vistos:
             continue
         vistos.add(k)
-        out.append(f"• {n['titular']} ({n.get('fuente', '')})\n  🔗 {n['enlace']}")
+        out.append(f"• {n['titular'][:140]} ({n.get('fuente', '')})\n  🔗 {acortar(n['enlace'])}")
         if len(out) >= max_n:
             break
     return ("\n\n🔎 Posibles (el filtro dudó, revisa):\n" + "\n".join(out)) if out else ""
@@ -669,7 +796,7 @@ def mensaje_telegram(noticias):
         fuente = f" ({n['fuente']})" if n["fuente"] else ""
         resumen = f"{n['resumen']}\n" if n.get("resumen") else ""
         otras = f"📎 También en: {n['otras_fuentes']}\n" if n.get("otras_fuentes") else ""
-        msg += f"{i}. {n['titular']}{fuente}\n{resumen}{otras}🔗 {n['enlace']}\n\n"
+        msg += f"{i}. {n['titular']}{fuente}\n{resumen}{otras}🔗 {acortar(n['enlace'])}\n\n"
     return msg.strip() + bloque_grises()
 
 
@@ -700,6 +827,10 @@ def main():
         nuevas = ordenar_y_limitar(elegir_unicas(no_repetidas))
         log(f"   Nuevas para guardar: {len(nuevas)}")
         enriquecer_todas(nuevas)
+        viejas = [n for n in nuevas if n.get("obsoleta")]
+        for n in viejas:
+            log(f"   🕰️  Descartada por fecha real {n['fecha_real']} (Google la mostró como reciente): {n['titular'][:60]}")
+        nuevas = [n for n in nuevas if not n.get("obsoleta")]
         if nuevas:
             guardar(servicio, spreadsheet_id, nuevas)
         enviar_telegram(mensaje_telegram(nuevas),
@@ -707,6 +838,9 @@ def main():
     else:
         top = ordenar_y_limitar(elegir_unicas(relevantes))
         enriquecer_todas(top)
+        for n in [n for n in top if n.get("obsoleta")]:
+            log(f"   🕰️  Descartada por fecha real {n['fecha_real']}: {n['titular'][:60]}")
+        top = [n for n in top if not n.get("obsoleta")]
         log("\n[dry-run] Mensaje de Telegram que se enviaría:\n")
         log(mensaje_telegram(top))
 
