@@ -8,3 +8,4 @@ google-auth==2.25.2
 google-auth-oauthlib==1.2.0
 google-auth-httplib2==0.2.0
 lxml==4.9.3
+googlenewsdecoder>=0.1.7
