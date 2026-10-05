@@ -1,4 +1,3 @@
-
 """
 =============================================================================
 BÚSQUEDA DE NOTICIAS DEL SECTOR (Google News RSS)
@@ -82,7 +81,7 @@ MAX_NOTICIAS = 15                                    # tope por corrida (evita s
 
 # Varias búsquedas cortas rinden más que una sola gigante (Google recorta resultados por query)
 QUERIES = [
-    '(hidrocarburos OR Osinergmin OR Perupetro OR Petroperú)',
+    '(hidrocarburos OR Osinergmin OR Perupetro OR Petroperú) Perú',
     '("gas natural" OR GLP OR GNV OR Camisea OR combustibles) Perú',
     '(Minem OR "energía y minas" OR electricidad OR "transición energética") Perú',
     '(OEFA OR "derrame de petróleo" OR "lote 192" OR "lote 95") Perú',
@@ -115,6 +114,7 @@ def parsear_rss(xml_texto):
         enlace = (it.findtext("link") or "").strip()
         src_el = it.find("source")
         fuente = (src_el.text or "").strip() if src_el is not None and src_el.text else ""
+        fuente_url = (src_el.get("url") or "").strip() if src_el is not None else ""
 
         titulo = re.sub(r"\s*\|\s*[A-ZÁÉÍÓÚÑ ]{3,25}$", "", titulo)      # "… | ECONOMIA" (sección del medio)
         # Google agrega " - Fuente" al final del titular: se quita para no duplicarlo
@@ -130,7 +130,7 @@ def parsear_rss(xml_texto):
 
         titulo = re.sub(r"\s*\|\s*[A-ZÁÉÍÓÚÑ ]{3,25}$", "", titulo)
         if titulo and enlace:
-            items.append({"titular": titulo, "fuente": fuente.strip(),
+            items.append({"titular": titulo, "fuente": fuente.strip(), "fuente_url": fuente_url,
                           "enlace": enlace, "fecha_pub": fecha_pub})
     return items
 
@@ -175,7 +175,11 @@ EXTRANJERO = re.compile(r"\b(?:estados unidos|eeuu|ee uu|europa|europea|rusia|ru
                         r"india|japon|corea|argentina|brasil|colombia|colombiano|mexico|mexicano|chile|"
                         r"bolivia|ecuador|venezuela|arabia|iran|israel|gazprom|texas|nigeria|reino unido|"
                         r"alemania|francia|espana|canada|noruega|qatar|angola|argelia|portugal|belgica|"
-                        r"huachicol\w*|sheinbaum|petrobras|pemex|ecopetrol|ypf|enap)\b")
+                        r"huachicol\w*|sheinbaum|petrobras|pemex|ecopetrol|ypf|enap|"
+                        r"espriella|valledupar|zapopan|puebla|mendoza|neuquen|rio negro|caracas|margarita|"
+                        r"cuba|malvinas|londres|irani|senegal|oran|villazon|la quiaca|"
+                        r"ministerio de hidrocarburos|ministro de hidrocarburos|unam|asea|milei|"
+                        r"cerro dragon|vaca muerta|portugal|halliburton)\b")
 PERU = re.compile(r"\b(?:peru|peruano|peruana|peruanos|lima|callao|piura|talara|cusco|arequipa|loreto|"
                   r"ucayali|tumbes|junin|camisea|minem|osinergmin|perupetro|petroperu|oefa|senace|"
                   r"minam|pluspetrol|tgp|calidda|fise|proinversion|coes|energia y minas|lote \d+|lote [ivx]+)\b")
@@ -203,15 +207,29 @@ TEMA_PERU = re.compile(r"\b(?:balon(?:es)? de gas|escasez de (?:gas|gasolina|com
                        r"crisis (?:del |de )?(?:gas|gnv|glp|combustibles?)|gasoducto|desabastecimiento de "
                        r"(?:gas|combustibles?)|restablecimiento (?:de|del) (?:gas|suministro))\b")
 REORG_MINEM = (re.compile(r"\breorganiz\w*"), re.compile(r"\bminem\b|energia y minas"))
-AJUSTE_NO_SECTOR, AJUSTE_TEMA, AJUSTE_SIN_PERU = 5.0, 3.0, 4.0
+# Sector peruano que evaluar_relevancia (hecho para títulos de normas) no puntúa: +3 una sola vez
+VOCAB_PERU = re.compile(r"\b(?:lote \d+|oleoducto norperuano|talara|balon(?:es)? de (?:gas|glp)|gas domiciliario|"
+                        r"calidda|contugas|pluspetrol|petrotal|canon (?:petrolero|gasifero)|gas de camisea|"
+                        r"parque eolico|gigante eolico|energia renovable|energias renovables)\b")
+# Minem: reorganización y lo que la acompaña (destrabar inversiones, meritocracia)
+REORG_MINEM = (re.compile(r"\b(?:reorganiz\w*|destrab\w*|meritocr\w*)\b"), re.compile(r"\bminem\b|energia y minas"))
+# Notas diarias de precios: son la misma noticia aunque cambie la fecha
+PRECIOS_DIA = re.compile(r"\b(?:precios? (?:del? )?(?:gnv|glp|gasolina|combustible\w*|diesel)|"
+                         r"cuanto (?:esta|cuesta) la gasolina|gasolina mas (?:barata|cara)|precios? de (?:la )?gasolina)\b")
+AJUSTE_NO_SECTOR, AJUSTE_TEMA, AJUSTE_SIN_PERU, AJUSTE_EXTRANJERO, AJUSTE_VOCAB = 5.0, 3.0, 2.5, 4.0, 3.0
+GRIS_MIN = 1.0           # entre GRIS_MIN y el umbral (3.0) y sin señal extranjera: "revisar" en Telegram
+GRISES = []
 
 
-def es_fuente_peruana(fuente):
+def es_fuente_peruana(fuente, url=""):
+    host = re.sub(r"^https?://(?:www\.)?", "", (url or "").lower()).split("/")[0]
+    if host.endswith(".pe"):                       # gestion.pe, rpp.pe, andina.pe, larepublica.pe...
+        return True
     f = normalizar_texto(fuente)
     return any(x in f for x in FUENTES_PERUANAS)
 
 
-def evaluar_noticia(titular, fuente=""):
+def evaluar_noticia(titular, fuente="", fuente_url=""):
     """evaluar_relevancia de normas_github + ajustes propios de noticias. Devuelve (ok, razón)."""
     _, razon = evaluar_relevancia(titular, "")
     m = re.search(r"(-?[\d.]+) pts \[(.*)\]", razon)
@@ -225,20 +243,27 @@ def evaluar_noticia(titular, fuente=""):
         pts += AJUSTE_TEMA; motivos.append(f"tema del momento +{AJUSTE_TEMA:g}")
     if REORG_MINEM[0].search(t) and REORG_MINEM[1].search(t):
         pts += AJUSTE_TEMA; motivos.append(f"reorganización Minem +{AJUSTE_TEMA:g}")
-    if EXTRANJERO.search(t) and not PERU.search(t):
-        pts -= AJUSTE_SIN_PERU; motivos.append(f"extranjera -{AJUSTE_SIN_PERU:g}")
-    elif not (PERU.search(t) or TEMA_PERU.search(t)) and not es_fuente_peruana(fuente):
+    if VOCAB_PERU.search(t):
+        pts += AJUSTE_VOCAB; motivos.append(f"vocabulario del sector +{AJUSTE_VOCAB:g}")
+    extranjera = bool(EXTRANJERO.search(t) and not PERU.search(t))
+    if extranjera:
+        pts -= AJUSTE_EXTRANJERO; motivos.append(f"extranjera -{AJUSTE_EXTRANJERO:g}")
+    elif not (PERU.search(t) or TEMA_PERU.search(t) or VOCAB_PERU.search(t)) and not es_fuente_peruana(fuente, fuente_url):
         pts -= AJUSTE_SIN_PERU; motivos.append(f"sin señal de Perú -{AJUSTE_SIN_PERU:g}")
 
     ok = pts >= 3.0
+    evaluar_noticia.gris = (not ok) and (not extranjera) and pts >= GRIS_MIN
     return ok, f"{'✅' if ok else '❌'} {pts:.1f} pts [{', '.join(x for x in motivos if x) or 'sin señales'}]"
 
 
 def filtrar_relevantes(items):
     ok = []
     for n in items:
-        relevante, razon = evaluar_noticia(n["titular"], n.get("fuente", ""))
-        log(f"   {'✅' if relevante else '❌'} {razon[2:].strip()[:45]:<45} | {n['titular'][:70]}")
+        relevante, razon = evaluar_noticia(n["titular"], n.get("fuente", ""), n.get("fuente_url", ""))
+        log(f"   {'✅' if relevante else '❌'} {razon[2:].strip()[:70]:<70} | {n['titular'][:90]}")
+        if not relevante and evaluar_noticia.gris:
+            n["puntaje"] = razon.lstrip("✅❌ ").strip()
+            GRISES.append(n)
         if relevante:
             n["puntaje"] = razon.lstrip("✅❌ ").strip()   # ej: "7.0 pts [hidrocarburos x1, entidad fuerte]"
             ok.append(n)
@@ -270,7 +295,9 @@ def _tokens(t):
     # _alias unifica "Ministerio de Energía y Minas" = Minem, "Organismo Supervisor..." = Osinergmin, etc.
     base = normalizar_texto(t)
     palabras = base.split() + _alias(base).split()          # forma larga y sigla, ambas cuentan
-    return {w[:6] for w in palabras if w not in _STOP and (len(w) >= 3 or w.isdigit())}
+    # los números de día (1-31) no distinguen noticias: "lunes 5" y "domingo 4" son la misma nota
+    return {w[:6] for w in palabras if w not in _STOP and (len(w) >= 3 or w.isdigit())
+            and not (w.isdigit() and int(w) <= 31)}
 
 
 # Pares de significados opuestos: si un titular dice una cosa y el otro la contraria, NO son la misma noticia
@@ -297,6 +324,8 @@ def _contradicen(a, b):
 
 def misma_noticia(titular_a, titular_b):
     """True si dos titulares hablan del mismo hecho: >=3 palabras en común y alto solapamiento."""
+    if PRECIOS_DIA.search(normalizar_texto(titular_a)) and PRECIOS_DIA.search(normalizar_texto(titular_b)):
+        return True
     a, b = _tokens(titular_a), _tokens(titular_b)
     comunes = a & b
     if len(comunes) < 3 or not a or not b:
@@ -619,16 +648,29 @@ def guardar(servicio, spreadsheet_id, noticias):
 # -----------------------------------------------------------------------------
 # TELEGRAM
 # -----------------------------------------------------------------------------
+def bloque_grises(max_n=6):
+    vistos, out = set(), []
+    for n in sorted(GRISES, key=lambda x: float(x["puntaje"].split()[0]), reverse=True):
+        k = normalizar_texto(n["titular"])[:60]
+        if k in vistos:
+            continue
+        vistos.add(k)
+        out.append(f"• {n['titular']} ({n.get('fuente', '')})\n  🔗 {n['enlace']}")
+        if len(out) >= max_n:
+            break
+    return ("\n\n🔎 Posibles (el filtro dudó, revisa):\n" + "\n".join(out)) if out else ""
+
+
 def mensaje_telegram(noticias):
     if not noticias:
-        return "📰 Noticias del sector: hoy no se encontraron noticias relevantes."
+        return "📰 Noticias del sector: hoy no se encontraron noticias relevantes." + bloque_grises()
     msg = f"📰 Noticias del sector {HOY.strftime('%d/%m/%y')}\n\n"
     for i, n in enumerate(noticias, 1):
         fuente = f" ({n['fuente']})" if n["fuente"] else ""
         resumen = f"{n['resumen']}\n" if n.get("resumen") else ""
         otras = f"📎 También en: {n['otras_fuentes']}\n" if n.get("otras_fuentes") else ""
         msg += f"{i}. {n['titular']}{fuente}\n{resumen}{otras}🔗 {n['enlace']}\n\n"
-    return msg.strip()
+    return msg.strip() + bloque_grises()
 
 
 # -----------------------------------------------------------------------------
