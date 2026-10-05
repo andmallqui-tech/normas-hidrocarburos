@@ -3,7 +3,7 @@
 ENVÍO DE BOLETÍN POR CORREO
   - Contactos : hoja "Contactos"  (columna ACTIVO = S/N)
   - Normas    : la hoja donde el buscador guarda las normas (columna G = S/N)
-  - Noticias  : hoja "Noticias"   (columna A = S/N)
+  - Noticias  : hoja "Noticias"   (columna H = S/N)
 Se envían las filas con S que aún no tengan fecha en la columna ENVIADO.
 Tras un envío real, el script escribe la fecha en ENVIADO para no repetirlas.
 =============================================================================
@@ -63,14 +63,18 @@ HOJA_NORMAS = ""      # "" = primera pestaña. Si tiene otro nombre, escríbelo 
 CAMPOS_NORMAS = ["captura", "norma", "fecha_pub", "resumen", "enlace",
                  "tipo", "enviar", "enviado"]
 
-# --- Noticias (pestaña nueva): A: ENVIAR | B: TITULAR | C: RESUMEN | D: ENLACE
-# E: FUENTE (opcional) | F: ENVIADO (lo escribe este script) | G: FECHA (AAAA-MM-DD,
-# el día en que se revisó/eligió la noticia; sin esto no se puede enviar)
+# --- Noticias (pestaña "Noticias", la crea noticias_github.py; mismo orden que Normas) ---
+# A: FECHA CAPTURA (AAAA-MM-DD, día en que se encontró; define a qué boletín entra)
+# B: TITULAR | C: FECHA PUBLICACIÓN | D: FUENTE | E: RESUMEN (opcional) | F: ENLACE
+# G: PUNTAJE FILTRO (informativo) | H: ENVIAR (S/N, lo marcas tú)
+# I: ENVIADO (lo escribe este script)
+# ⚠️ Mantener sincronizado con CAMPOS de noticias_github.py.
 HOJA_NOTICIAS = "Noticias"
-CAMPOS_NOTICIAS = ["enviar", "titular", "resumen", "enlace", "fuente", "enviado", "fecha"]
+CAMPOS_NOTICIAS = ["captura", "titular", "fecha_pub", "fuente", "resumen",
+                   "enlace", "puntaje", "enviar", "enviado"]
 
 # Solo se envían normas/noticias marcadas con S y cuya fecha (columna "captura" en
-# normas, "fecha" en noticias) coincide con la fecha del boletín. Lo que no se
+# normas y noticias) coincide con la fecha del boletín. Lo que no se
 # envió ese día caduca: no se acumula ni aparece en boletines de otros días.
 
 VALORES_SI = ("S", "SI", "SÍ", "Y", "YES", "TRUE", "1")
@@ -635,7 +639,7 @@ def main():
                                 obligatorio=True)
         noticias = leer_seleccion(servicio, spreadsheet_id, HOJA_NOTICIAS,
                                   CAMPOS_NOTICIAS, "titular", "noticias",
-                                  campo_fecha="fecha", fecha_objetivo=fecha_objetivo,
+                                  campo_fecha="captura", fecha_objetivo=fecha_objetivo,
                                   obligatorio=False)
         if not normas and not noticias:
             log(f"\n⚠️  No hay normas ni noticias con S del {fecha_objetivo}. Nada que enviar.")
