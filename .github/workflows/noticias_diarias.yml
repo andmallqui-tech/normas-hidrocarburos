@@ -1,0 +1,46 @@
+name: Buscar Noticias del Sector
+
+on:
+  # Solo ejecución manual (Actions > Buscar Noticias del Sector > Run workflow)
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Prueba: no escribe en Sheets ni envía Telegram'
+        type: boolean
+        required: false
+        default: false
+
+jobs:
+  buscar-noticias:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Configurar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      # normas_github.py importa selenium/sklearn/pandas al cargarse, por eso se
+      # instala todo requirements.txt (no hace falta Chrome: aquí no se hace scraping web).
+      - name: Instalar dependencias
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Buscar noticias
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TZ: America/Lima
+          DRY_RUN: ${{ github.event.inputs.dry_run }}
+        run: |
+          if [ "$DRY_RUN" = "true" ]; then
+            python noticias_github.py --dry-run
+          else
+            python noticias_github.py
+          fi
