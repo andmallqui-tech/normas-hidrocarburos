@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
+
 """
 =============================================================================
 BÚSQUEDA DE NOTICIAS DEL SECTOR (Google News RSS)
@@ -13,7 +12,6 @@ BÚSQUEDA DE NOTICIAS DEL SECTOR (Google News RSS)
     F=ENLACE | G=PUNTAJE FILTRO (por qué el filtro la aceptó)
     H=ENVIAR (S/N, lo marcas tú) | I=ENVIADO (lo escribe enviar_correos.py)
     J=OTRAS FUENTES (otros diarios que publicaron lo mismo; informativa)
-  ⚠️ Si cambias el orden de A:I, cambia también CAMPOS_NOTICIAS en enviar_correos.py (la J no importa).
 - Resuelve el enlace real de cada noticia (Google News solo entrega un redirect), abre la
   página y extrae un resumen (meta description / primeros párrafos). Si falla, queda vacío.
 - Deduplica contra lo que ya está en la hoja (por enlace y por titular).
@@ -54,7 +52,7 @@ except ImportError:
     gnewsdecoder = None
 
 # Reutiliza el filtro y el envío a Telegram del scraper de normas (no se modifica ese archivo)
-from normas_github import evaluar_relevancia, enviar_telegram, normalizar_texto
+from normas_github import evaluar_relevancia, enviar_telegram, normalizar_texto, _alias
 
 HOJA_NOTICIAS = "Noticias"
 # Orden de columnas (única fuente de verdad en este archivo). Debe coincidir con
@@ -79,7 +77,7 @@ FECHA_DESDE = HOY - timedelta(days=DIAS_ATRAS)       # filtro exacto por fecha d
 # para no perder lo de la madrugada del primer día; el filtro exacto por fecha lo hace FECHA_DESDE.
 VENTANA = f"{DIAS_ATRAS + 1}d"
 LARGO_RESUMEN = 320                                  # caracteres máximos del resumen
-MAX_POR_QUERY = 50
+MAX_POR_QUERY = 100
 MAX_NOTICIAS = 15                                    # tope por corrida (evita saturar la hoja)
 
 # Varias búsquedas cortas rinden más que una sola gigante (Google recorta resultados por query)
@@ -118,6 +116,7 @@ def parsear_rss(xml_texto):
         src_el = it.find("source")
         fuente = (src_el.text or "").strip() if src_el is not None and src_el.text else ""
 
+        titulo = re.sub(r"\s*\|\s*[A-ZÁÉÍÓÚÑ ]{3,25}$", "", titulo)      # "… | ECONOMIA" (sección del medio)
         # Google agrega " - Fuente" al final del titular: se quita para no duplicarlo
         if fuente and titulo.endswith(f" - {fuente}"):
             titulo = titulo[: -len(fuente) - 3].strip()
@@ -129,6 +128,7 @@ def parsear_rss(xml_texto):
         except Exception:
             fecha_pub = None
 
+        titulo = re.sub(r"\s*\|\s*[A-ZÁÉÍÓÚÑ ]{3,25}$", "", titulo)
         if titulo and enlace:
             items.append({"titular": titulo, "fuente": fuente.strip(),
                           "enlace": enlace, "fecha_pub": fecha_pub})
@@ -167,34 +167,77 @@ def deduplicar(items):
 # -----------------------------------------------------------------------------
 # FILTRO DE RELEVANCIA PARA NOTICIAS
 # -----------------------------------------------------------------------------
-# Las normas son siempre peruanas; las noticias no. Un titular sobre "gasolina en EE.UU." o
-# "Gazprom y el gas natural" suma puntos de hidrocarburos, pero no interesa al boletín.
+# Las normas son siempre peruanas; las noticias no. Sobre el puntaje de normas_github se agrega:
+#   - exigir señal de Perú (en el titular o diario peruano)  -> evita Colombia, México, Argentina...
+#   - restar ruido que usa el nombre del sector sin ser del sector (elecciones, fútbol, metáforas)
+#   - sumar los temas que hoy mueven al sector (crisis del gas, reorganización del Minem)
 EXTRANJERO = re.compile(r"\b(?:estados unidos|eeuu|ee uu|europa|europea|rusia|ruso|rusa|ucrania|china|"
-                        r"india|japon|corea|argentina|brasil|colombia|mexico|chile|bolivia|ecuador|"
-                        r"venezuela|arabia|iran|israel|gazprom|texas|nigeria|reino unido|alemania|"
-                        r"francia|espana|canada|noruega|qatar|angola)\b")
+                        r"india|japon|corea|argentina|brasil|colombia|colombiano|mexico|mexicano|chile|"
+                        r"bolivia|ecuador|venezuela|arabia|iran|israel|gazprom|texas|nigeria|reino unido|"
+                        r"alemania|francia|espana|canada|noruega|qatar|angola|argelia|portugal|belgica|"
+                        r"huachicol\w*|sheinbaum|petrobras|pemex|ecopetrol|ypf|enap)\b")
 PERU = re.compile(r"\b(?:peru|peruano|peruana|peruanos|lima|callao|piura|talara|cusco|arequipa|loreto|"
                   r"ucayali|tumbes|junin|camisea|minem|osinergmin|perupetro|petroperu|oefa|senace|"
-                  r"minam|pluspetrol|repsol|lote \d+|lote [ivx]+)\b")
-PENALIDAD_EXTRANJERO = 3.0
+                  r"minam|pluspetrol|tgp|calidda|fise|proinversion|coes|energia y minas|lote \d+|lote [ivx]+)\b")
+# Diarios peruanos: si el titular no menciona a Perú pero viene de uno de estos, se acepta
+FUENTES_PERUANAS = ["gestion", "el comercio", "la republica", "rpp", "andina", "peru21", "correo",
+                    "exitosa", "energiminas", "rumbo minero", "proactivo", "canal n", "el peruano",
+                    "comexperu", "semana economica", "convoca", "ojo publico", "peru retail"]
+# ✏️ EDITABLE: palabras que delatan una noticia que NO es del sector aunque nombre Petroperú,
+# hidrocarburos, etc. (elecciones, fútbol...). Si te llega una noticia que no va, agrega aquí la
+# palabra que la delata (en minúsculas y sin tilde). Cada coincidencia resta AJUSTE_NO_SECTOR puntos.
+PALABRAS_EXCLUIR = [
+    # elecciones / política electoral
+    "erm", "elecciones", "eleccion", "sufragar", "sufragio", "votar", "votacion", "miembros de mesa",
+    "local de votacion", "local de petroperu", "onpe", "jne", "candidato", "candidata",
+    # metáforas y comparaciones con Petroperú
+    "parece el petroperu",
+    # deportes
+    "futbol", "liga", "partido", "goleada", "beisbol", "campeonato", "guaiqueri\\w*", "navegantes",
+    # educación / espectáculos / clima
+    "universidad\\w*", "horoscopo", "farandula", "clima en",
+]
+NO_SECTOR = re.compile(r"\b(?:" + "|".join(PALABRAS_EXCLUIR) + r")\b")
+# Temas que hoy mueven al sector (aunque el titular no nombre una entidad)
+TEMA_PERU = re.compile(r"\b(?:balon(?:es)? de gas|escasez de (?:gas|gasolina|combustibles?|glp|gnv)|"
+                       r"crisis (?:del |de )?(?:gas|gnv|glp|combustibles?)|gasoducto|desabastecimiento de "
+                       r"(?:gas|combustibles?)|restablecimiento (?:de|del) (?:gas|suministro))\b")
+REORG_MINEM = (re.compile(r"\breorganiz\w*"), re.compile(r"\bminem\b|energia y minas"))
+AJUSTE_NO_SECTOR, AJUSTE_TEMA, AJUSTE_SIN_PERU = 5.0, 3.0, 4.0
 
 
-def evaluar_noticia(titular):
-    """evaluar_relevancia de normas_github + penalidad si es extranjera y no menciona nada peruano."""
-    ok, razon = evaluar_relevancia(titular, "")
+def es_fuente_peruana(fuente):
+    f = normalizar_texto(fuente)
+    return any(x in f for x in FUENTES_PERUANAS)
+
+
+def evaluar_noticia(titular, fuente=""):
+    """evaluar_relevancia de normas_github + ajustes propios de noticias. Devuelve (ok, razón)."""
+    _, razon = evaluar_relevancia(titular, "")
+    m = re.search(r"(-?[\d.]+) pts \[(.*)\]", razon)
+    pts, motivos = (float(m.group(1)), m.group(2)) if m else (0.0, "")
+    motivos = [] if motivos == "sin señales" else [motivos]
     t = normalizar_texto(titular)
+
+    if NO_SECTOR.search(t):
+        pts -= AJUSTE_NO_SECTOR; motivos.append(f"no sectorial -{AJUSTE_NO_SECTOR:g}")
+    if TEMA_PERU.search(t):
+        pts += AJUSTE_TEMA; motivos.append(f"tema del momento +{AJUSTE_TEMA:g}")
+    if REORG_MINEM[0].search(t) and REORG_MINEM[1].search(t):
+        pts += AJUSTE_TEMA; motivos.append(f"reorganización Minem +{AJUSTE_TEMA:g}")
     if EXTRANJERO.search(t) and not PERU.search(t):
-        m = re.search(r"([-\d.]+) pts", razon)
-        pts = float(m.group(1)) - PENALIDAD_EXTRANJERO if m else 0.0
-        ok = pts >= 3.0
-        razon = f"{'✅' if ok else '❌'} {pts:.1f} pts [{razon.split('[', 1)[-1].rstrip(']')}, extranjera -{PENALIDAD_EXTRANJERO:g}]"
-    return ok, razon
+        pts -= AJUSTE_SIN_PERU; motivos.append(f"extranjera -{AJUSTE_SIN_PERU:g}")
+    elif not (PERU.search(t) or TEMA_PERU.search(t)) and not es_fuente_peruana(fuente):
+        pts -= AJUSTE_SIN_PERU; motivos.append(f"sin señal de Perú -{AJUSTE_SIN_PERU:g}")
+
+    ok = pts >= 3.0
+    return ok, f"{'✅' if ok else '❌'} {pts:.1f} pts [{', '.join(x for x in motivos if x) or 'sin señales'}]"
 
 
 def filtrar_relevantes(items):
     ok = []
     for n in items:
-        relevante, razon = evaluar_noticia(n["titular"])
+        relevante, razon = evaluar_noticia(n["titular"], n.get("fuente", ""))
         log(f"   {'✅' if relevante else '❌'} {razon[2:].strip()[:45]:<45} | {n['titular'][:70]}")
         if relevante:
             n["puntaje"] = razon.lstrip("✅❌ ").strip()   # ej: "7.0 pts [hidrocarburos x1, entidad fuerte]"
@@ -224,8 +267,10 @@ asi muy ya le les nos hoy ayer""".split())
 
 def _tokens(t):
     """Palabras significativas del titular, recortadas a 6 letras (agrupa singular/plural/verbos)."""
-    return {w[:6] for w in normalizar_texto(t).split()
-            if w not in _STOP and (len(w) >= 3 or w.isdigit())}
+    # _alias unifica "Ministerio de Energía y Minas" = Minem, "Organismo Supervisor..." = Osinergmin, etc.
+    base = normalizar_texto(t)
+    palabras = base.split() + _alias(base).split()          # forma larga y sigla, ambas cuentan
+    return {w[:6] for w in palabras if w not in _STOP and (len(w) >= 3 or w.isdigit())}
 
 
 # Pares de significados opuestos: si un titular dice una cosa y el otro la contraria, NO son la misma noticia
@@ -258,7 +303,7 @@ def misma_noticia(titular_a, titular_b):
         return False
     if _contradicen(a, b):
         return False
-    return len(comunes) / min(len(a), len(b)) >= 0.5 and len(comunes) / len(a | b) >= 0.3
+    return len(comunes) / min(len(a), len(b)) >= 0.4 and len(comunes) / len(a | b) >= 0.25
 
 
 def agrupar(noticias):
@@ -319,7 +364,33 @@ def elegir_mejor(grupo):
 def elegir_unicas(noticias):
     grupos = agrupar(noticias)
     log(f"\n🧩 Agrupando la misma noticia: {len(noticias)} → {len(grupos)} noticias distintas")
-    return [elegir_mejor(g) for g in grupos]
+    elegidas = []
+    for g in grupos:
+        n = elegir_mejor(g)
+        n["cobertura"] = len(g)          # cuántos diarios la publicaron: mide la importancia
+        elegidas.append(n)
+    return elegidas
+
+
+MAX_POR_ENTIDAD = 4      # que una sola entidad (p. ej. Petroperú) no ocupe todo el boletín
+ENTIDADES_TOPE = ["petroperu", "perupetro", "osinergmin", "minem", "oefa", "camisea"]
+
+
+def ordenar_y_limitar(noticias):
+    """Más diarios la publicaron = más importante; empata el puntaje. Máx. MAX_POR_ENTIDAD por entidad."""
+    orden = sorted(noticias, key=lambda n: (n.get("cobertura", 1), float(n["puntaje"].split()[0])), reverse=True)
+    cuenta, final, omitidas = {}, [], 0
+    for n in orden:
+        t = normalizar_texto(n["titular"])
+        ent = next((e for e in ENTIDADES_TOPE if e in t), None)
+        if ent and cuenta.get(ent, 0) >= MAX_POR_ENTIDAD:
+            omitidas += 1
+            continue
+        cuenta[ent] = cuenta.get(ent, 0) + 1
+        final.append(n)
+    if omitidas:
+        log(f"   ✂️  {omitidas} noticia(s) omitidas por tope de {MAX_POR_ENTIDAD} por entidad")
+    return final[:MAX_NOTICIAS]
 
 
 # -----------------------------------------------------------------------------
@@ -584,8 +655,7 @@ def main():
                         if n["enlace"] not in enlaces
                         and not any(misma_noticia(n["titular"], t) for t in titulares)]
         log(f"\n   Ya estaban en la hoja (últimos 7 días): {len(relevantes) - len(no_repetidas)}")
-        nuevas = sorted(elegir_unicas(no_repetidas),
-                        key=lambda n: float(n["puntaje"].split()[0]), reverse=True)[:MAX_NOTICIAS]
+        nuevas = ordenar_y_limitar(elegir_unicas(no_repetidas))
         log(f"   Nuevas para guardar: {len(nuevas)}")
         enriquecer_todas(nuevas)
         if nuevas:
@@ -593,8 +663,7 @@ def main():
         enviar_telegram(mensaje_telegram(nuevas),
                         os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID"))
     else:
-        top = sorted(elegir_unicas(relevantes),
-                     key=lambda n: float(n["puntaje"].split()[0]), reverse=True)[:MAX_NOTICIAS]
+        top = ordenar_y_limitar(elegir_unicas(relevantes))
         enriquecer_todas(top)
         log("\n[dry-run] Mensaje de Telegram que se enviaría:\n")
         log(mensaje_telegram(top))
