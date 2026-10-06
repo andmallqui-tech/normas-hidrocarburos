@@ -3,7 +3,13 @@
 BÚSQUEDA DE NOTICIAS DEL SECTOR (Google News RSS)
 =============================================================================
 - Consulta Google News RSS (sin API key) con varias búsquedas del sector.
-- Reusa el filtro por puntaje de normas_github.evaluar_relevancia.
+- Reusa el vocabulario y el puntaje de normas_github (CORE, entidades, evaluar_relevancia) y lo AFINA
+  para el público del boletín (instituciones que siguen el sector HIDROCARBUROS):
+    · Etapa 1 (titular, laxa): decide a quién se le abre la página.
+    · Etapa 2 (titular + resumen + sección/URL, estricta): exige ancla de hidrocarburos y un hecho
+      concreto (regulación, contrato/lote, inversión, decisión de empresa...).
+    · Usa tus normas recientes (hoja de Normas) y tus S/N de la hoja Noticias para ajustar.
+- Verifica la fecha REAL (URL/página) ANTES de elegir cuáles entran; no hay tope fijo de noticias.
 - Escribe en la pestaña "Noticias" con el MISMO formato que lee enviar_correos.py
   (sigue el orden de la pestaña de Normas: captura primero, decisión y envío al final):
     A=FECHA CAPTURA (AAAA-MM-DD, día en que se encontró; define el día del boletín)
@@ -52,7 +58,10 @@ except Exception as _e:               # ImportError, pero también incompatibili
     print(f"⚠️  googlenewsdecoder no se pudo importar: {type(_e).__name__}: {str(_e)[:120]}", flush=True)
 
 # Reutiliza el filtro y el envío a Telegram del scraper de normas (no se modifica ese archivo)
-from normas_github import evaluar_relevancia, enviar_telegram, normalizar_texto, _alias
+from collections import Counter
+from math import log as _ln
+from normas_github import (evaluar_relevancia, enviar_telegram, normalizar_texto, _alias,
+                           CORE, ENTIDAD_FUERTE, INFRA_ENERGIA, MINERIA, AMBIENTE, ENERGIA_GENERAL)
 
 HOJA_NOTICIAS = "Noticias"
 # Orden de columnas (única fuente de verdad en este archivo). Debe coincidir con
@@ -78,14 +87,41 @@ FECHA_DESDE = HOY - timedelta(days=DIAS_ATRAS)       # filtro exacto por fecha d
 VENTANA = f"{DIAS_ATRAS + 1}d"
 LARGO_RESUMEN = 320                                  # caracteres máximos del resumen
 MAX_POR_QUERY = 100
-MAX_NOTICIAS = 15                                    # tope por corrida (evita saturar la hoja)
 
-# Varias búsquedas cortas rinden más que una sola gigante (Google recorta resultados por query)
+
+def _env_int(nombre, defecto):
+    try:
+        return int(os.getenv(nombre) or defecto)
+    except ValueError:
+        return defecto
+
+
+# --- Cuántas noticias entran --------------------------------------------------------------------
+# YA NO hay un "siempre 15": entra todo lo que supere UMBRAL_FINAL. MAX_NOTICIAS es solo un techo de
+# seguridad por si un día el filtro se descontrola (0 = sin techo). Se puede cambiar por variable de entorno.
+MAX_NOTICIAS = _env_int("NOTICIAS_TOPE", 40)
+MAX_ENRIQUECER = _env_int("NOTICIAS_MAX_ENRIQUECER", 70)     # a cuántas se les abre la página (enlace real, fecha, resumen)
+MAX_POR_ENTIDAD = _env_int("NOTICIAS_MAX_POR_ENTIDAD", 6)    # que una sola entidad no ocupe todo el boletín
+UMBRAL_PRE = 2.0          # etapa 1 (solo titular): laxo, para no perder candidatas
+UMBRAL_FINAL = 3.0        # etapa 2 (titular + resumen + sección): estricto
+HOLGURA_FECHA = 1         # días de tolerancia sobre FECHA_DESDE al verificar la fecha real
+# Electricidad/renovables: por defecto FUERA (el boletín es de hidrocarburos). INCLUIR_ELECTRICIDAD=1 los reactiva.
+INCLUIR_ELECTRICIDAD = (os.getenv("INCLUIR_ELECTRICIDAD") or "").strip().lower() in ("1", "true", "si", "sí")
+
+# Varias búsquedas cortas rinden más que una sola gigante (Google recorta ~100 resultados por query).
+# Todas apuntan a HIDROCARBUROS; ya no se busca "electricidad" ni "transición energética" a secas.
 QUERIES = [
-    '(hidrocarburos OR Osinergmin OR Perupetro OR Petroperú) Perú',
-    '("gas natural" OR GLP OR GNV OR Camisea OR combustibles) Perú',
-    '(Minem OR "energía y minas" OR electricidad OR "transición energética") Perú',
-    '(OEFA OR "derrame de petróleo" OR "lote 192" OR "lote 95") Perú',
+    '(hidrocarburos OR Perupetro OR Petroperú) Perú',
+    '(Osinergmin OR Minem) (hidrocarburos OR "gas natural" OR combustibles OR GLP OR GNV)',
+    '("gas natural" OR GNV OR GLP OR Camisea OR TGP OR Calidda OR Contugas) Perú',
+    '(Petroperú OR "Refinería Talara" OR "Oleoducto Norperuano") (directorio OR deuda OR contrato OR reorganización OR producción OR crudo)',
+    '(adenda OR contrato OR licitación OR lote) (Perupetro OR hidrocarburos OR petróleo OR "gas natural") Perú',
+    '(OEFA OR "derrame de petróleo" OR "lote 192" OR "lote 95" OR "lote 8" OR "lote 56") Perú',
+    '("banda de precios" OR "precio del petróleo" OR Brent) (combustibles OR Perú)',
+    '("proyecto de ley" OR "decreto supremo" OR reglamento OR dictamen) (hidrocarburos OR "gas natural" OR combustibles OR GLP OR Petroperú)',
+]
+QUERIES_ELECTRICIDAD = [
+    '(Minem OR "energía y minas") (electricidad OR "transición energética" OR renovables) Perú',
 ]
 
 HEADERS_HTTP = {"User-Agent": "Mozilla/5.0 (compatible; normas-hidrocarburos/1.0)"}
@@ -106,8 +142,17 @@ def url_rss(query, ventana):
     return f"https://news.google.com/rss/search?q={q}&hl=es-419&gl=PE&ceid=PE:es-419"
 
 
+_RX_SECCION = re.compile(r"\s*\|\s*([A-ZÁÉÍÓÚÑ ]{3,25})$")
+
+
+def _quitar_seccion(titulo):
+    """'Titular | OPINIÓN' -> ('Titular', 'OPINIÓN'). La sección se conserva: sirve para descartar opinión/deportes."""
+    m = _RX_SECCION.search(titulo)
+    return (titulo[:m.start()], m.group(1).strip()) if m else (titulo, "")
+
+
 def parsear_rss(xml_texto):
-    """Devuelve lista de dicts {titular, fuente, enlace, fecha_pub}."""
+    """Devuelve lista de dicts {titular, fuente, enlace, fecha_pub, seccion}."""
     items = []
     root = ET.fromstring(xml_texto)
     for it in root.iter("item"):
@@ -117,7 +162,7 @@ def parsear_rss(xml_texto):
         fuente = (src_el.text or "").strip() if src_el is not None and src_el.text else ""
         fuente_url = (src_el.get("url") or "").strip() if src_el is not None else ""
 
-        titulo = re.sub(r"\s*\|\s*[A-ZÁÉÍÓÚÑ ]{3,25}$", "", titulo)      # "… | ECONOMIA" (sección del medio)
+        titulo, seccion = _quitar_seccion(titulo)                          # "… | ECONOMIA" (sección del medio)
         # Google agrega " - Fuente" al final del titular: se quita para no duplicarlo
         if fuente and titulo.endswith(f" - {fuente}"):
             titulo = titulo[: -len(fuente) - 3].strip()
@@ -129,21 +174,22 @@ def parsear_rss(xml_texto):
         except Exception:
             fecha_pub = None
 
-        titulo = re.sub(r"\s*\|\s*[A-ZÁÉÍÓÚÑ ]{3,25}$", "", titulo)
+        titulo, seccion2 = _quitar_seccion(titulo)
         if titulo and enlace:
             items.append({"titular": titulo, "fuente": fuente.strip(), "fuente_url": fuente_url,
-                          "enlace": enlace, "fecha_pub": fecha_pub})
+                          "enlace": enlace, "fecha_pub": fecha_pub, "seccion": seccion or seccion2})
     return items
 
 
-def buscar_noticias():
+def buscar_noticias(queries=None):
     todas = []
-    for q in QUERIES:
+    for q in (queries or QUERIES):
         try:
             r = requests.get(url_rss(q, VENTANA), headers=HEADERS_HTTP, timeout=20)
             r.raise_for_status()
             items = parsear_rss(r.content)
             antes = len(items)
+            # Sin fecha de Google => se conserva, pero se verificará con la fecha real de la página/URL.
             items = [n for n in items if not n["fecha_pub"] or n["fecha_pub"] >= FECHA_DESDE][:MAX_POR_QUERY]
             log(f"   🔎 {q[:55]}... → {len(items)} resultados (de {antes}; desde {FECHA_DESDE})")
             todas.extend(items)
@@ -209,8 +255,9 @@ TEMA_PERU = re.compile(r"\b(?:balon(?:es)? de gas|escasez de (?:gas|gasolina|com
                        r"(?:gas|combustibles?)|restablecimiento (?:de|del) (?:gas|suministro))\b")
 # Sector peruano que evaluar_relevancia (hecho para títulos de normas) no puntúa: +3 una sola vez
 VOCAB_PERU = re.compile(r"\b(?:lotes? \d+|tgp|reguladores?|oleoducto norperuano|talara|balon(?:es)? de (?:gas|glp)|gas domiciliario|"
-                        r"calidda|contugas|pluspetrol|petrotal|canon (?:petrolero|gasifero)|gas de camisea|"
-                        r"parque eolico|gigante eolico|energia renovable|energias renovables)\b")
+                        r"calidda|contugas|pluspetrol|petrotal|canon (?:petrolero|gasifero)|gas de camisea)\b")
+# Solo suma si INCLUIR_ELECTRICIDAD=1 (el boletín es de hidrocarburos)
+VOCAB_RENOVABLE = re.compile(r"\b(?:parque eolico|gigante eolico|energia renovable|energias renovables)\b")
 # Minem: reorganización y lo que la acompaña (destrabar inversiones, meritocracia)
 REORG_MINEM = (re.compile(r"\b(?:reorganiz\w*|destrab\w*|meritocr\w*)\b"), re.compile(r"\bminem\b|energia y minas"))
 # Notas diarias de precios: son la misma noticia aunque cambie la fecha
@@ -245,18 +292,42 @@ CONSUMO_PUBLICO = re.compile(r"\b(?:precios? (?:del|de los|de) balon(?:es)?|olla
 CANON_TRANSFERENCIA = re.compile(r"\b(?:recib\w+|transfer\w+|distribuy\w+|girar\w*|trasladar\w*)\b.*\bcanon\b|"
                                  r"\bcanon\b.*\b(?:recib\w+|transferenc\w+)\b")
 AJUSTE_CANON = 4.0
-# Hechos que le sirven a una empresa del sector: regulación, contratos/lotes, inversión/proyectos,
-# decisiones institucionales, mercado y suministro a nivel sistema.
-EVENTO_SECTOR = re.compile(
-    r"\b(?:adenda\w*|contrat\w+|convenios?|concesion\w*|licitacion\w*|subasta\w*|adjudic\w+|lotes? \w+|"
-    r"decretos? (?:supremos?|de urgencia|legislativo)|du \d|reglament\w+|resolucion\w*|proyectos? de ley|dictamen|"
-    r"congreso|consejo directivo|comites?|concursos?|directorio|reorganiz\w+|capital privado|activos|proinversion|"
-    r"inversion(?:es)?|gasoducto\w*|oleoducto\w*|refineria|exploracion|explotacion|yacimientos?|cuenca|reservas|"
-    r"descubrimiento|candamo|estudio de mercado|competencia|tarifa\w*|peaje\w*|fiscaliz\w+|sancion\w*|multas?|"
-    r"arbitraje|reguladores?|emergencia|masificacion|suministro|transmision|interconexion|generacion|eolic\w+|"
-    r"solar\w*|hidroelectric\w+|osinergmin|indecopi|perupetro|minem|oefa|senace|petroperu|tgp|calidda|contugas|"
-    r"coes|pcm|contraloria|camisea|talara)\b")
-AJUSTE_SIN_HECHO = 1.5
+# Hechos que le sirven a una institución del sector: decisiones, normas, contratos/lotes, inversión, finanzas
+# de las empresas, producción/reservas, incidentes de suministro. OJO: los NOMBRES de entidades ya no cuentan
+# como "hecho" (antes "Petroperú: la historia de la empresa" pasaba solo por nombrar a Petroperú).
+EVENTO_INST = re.compile(
+    r"\b(?:aprueb\w+|aprob\w+|oficializ\w+|promulg\w+|dispon\w+|modific\w+|derog\w+|emit\w+|emision\w*|"
+    r"reglament\w+|decretos? (?:supremos?|de urgencia|legislativos?)|du \d+|leyes?|proyectos? de ley|dictamen\w*|"
+    r"adenda\w*|contrat\w+|convenios?|licitacion\w*|concurso\w*|subasta\w*|adjudic\w+|lotes? \w+|concesion\w*|"
+    r"firm\w+|suscrib\w+|otorg\w+|autoriz\w+|cesion\w*|sancion\w*|multa\w*|fiscaliz\w+|supervis\w+|"
+    r"emergencia|arbitraje|ciadi|laudo|demandan?|"
+    r"directorio|reorganiz\w+|capitaliz\w+|deuda|garantia\w*|rescate|refinanc\w+|calificacion|"
+    r"produccion|reservas|descubri\w+|exploracion|perforacion|pozos?|"
+    r"inversion\w*|gasoducto\w*|oleoducto\w*|refineria|masificacion|"
+    r"restablec\w+|suspend\w+|paraliz\w+|falla|rotura|derrame\w*|paro|bloque\w*|"
+    r"destrab\w+|privatiz\w+|venta de activos|subsidio\w*|fondo de estabilizacion|banda de precios|"
+    r"importacion\w*|exportacion\w*|"
+    r"anunci\w+|present\w+|propon\w+|propuesta\w*|plan(?:es)?|salvataje|reestructur\w+|solicit\w+|pid\w+|"
+    r"investig\w+|denunci\w+|concertacion|conect\w+|ampli\w+|construc\w+|obras?|inici\w+|culmin\w+|lanz\w+|"
+    r"prepublic\w+|norma\w*|acuerd\w+|negoci\w+|cierr\w+|evalu\w+|plantea\w*|convoc\w+|"
+    r"fij\w+|tarifa\w*|peaje\w*|cargos?|pagos?|cronograma\w*|ejecut\w+|impuls\w+|promuev\w+|promover|"
+    r"incumpl\w+|infraccion\w*|riesgo\w*|alerta\w*|incendio\w*|explosion\w*|accidente\w*)\b")
+# Notas explicativas / históricas / de consejos: contexto general, no un hecho para la institución
+NO_HECHO_TIT = re.compile(r"\b(?:historia de|asi llego|claves?|todo lo que (?:debes|necesitas)|que es|como funciona|"
+                          r"por que|guia|paso a paso|preguntas|razones|conoce|descubre|como (?:ahorrar|elegir|cargar)|"
+                          r"consejos|tips|trucos)\b")
+AJUSTE_EXPLICATIVA = 3.0
+# "bono" es consumo SOLO si no habla de deuda/emisión (p. ej. "bono de Petroperú" es finanzas de la empresa)
+BONO = re.compile(r"\bbonos?\b")
+BONO_CORP = re.compile(r"\b(?:petroperu|perupetro|emision\w*|soberanos?|corporativ\w+|deuda|garantia\w*|mef|capital)\b")
+SERVICIO_SIN_BONO = re.compile(SERVICIO.pattern.replace("bono\\b|", ""))
+# Opinión / secciones que no son noticia del sector (se leen de la sección que informa Google y del PATH de la URL)
+OPINION_SEC = re.compile(r"\b(?:opinion|columnistas?|editorial|blogs?|cartas?|tribuna)\b")
+OPINION_TIT = re.compile(r"^(?:opinion|editorial|columna)\b")
+SECCION_RUIDO = re.compile(r"\b(?:deportes?|futbol|espectaculos?|entretenimiento|farandula|horoscopo|virales?|lifestyle|"
+                           r"tendencias|policiales?|gastronomia|loterias?|tv|television|salud|cultura|estilo de vida)\b")
+SECCION_MUNDO = re.compile(r"\b(?:mundo|internacional(?:es)?|global)\b")
+AJUSTE_OPINION, AJUSTE_SECCION, AJUSTE_MUNDO, AJUSTE_NORMAS = 4.0, 6.0, 4.0, 1.5
 # Temas que el boletín sí publica (según lo enviado): regulación, contratos/lotes, proyectos, mercado, reorganización.
 # NO decide si entra (eso lo hace el puntaje); solo sube su prioridad dentro del tope de MAX_NOTICIAS.
 TEMA_EDITORIAL = re.compile(r"\b(?:osinergmin|indecopi|reguladores?|pcm|concursos?|adenda\w*|contratos?|convenios?|"
@@ -276,68 +347,202 @@ def es_fuente_peruana(fuente, url=""):
     return any(x in f for x in FUENTES_PERUANAS)
 
 
-def evaluar_noticia(titular, fuente="", fuente_url=""):
-    """evaluar_relevancia de normas_github + ajustes propios de noticias. Devuelve (ok, razón)."""
-    _, razon = evaluar_relevancia(titular, "")
+# -----------------------------------------------------------------------------
+# CONTEXTO: normas recientes + feedback S/N de la hoja Noticias
+# -----------------------------------------------------------------------------
+# Términos específicos que aparecen seguido en las normas que el sistema de normas capturó (y no marcaste N).
+# Una noticia del sector que coincide con uno de ellos sube +AJUSTE_NORMAS: es "contexto" de lo que se está regulando.
+TEMAS_NORMAS = []                      # [(termino, regex)], lo llena cargar_temas_normas()
+_GENERICOS = {"hidrocarburos", "hidrocarburo", "petroleo", "combustible", "combustibles", "gas natural",
+              "ductos", "ducto", "crudo", "grifo", "grifos"}   # demasiado amplios para distinguir un tema
+
+
+def temas_desde_normas(textos_pesos, n_max=6, min_veces=2):
+    """textos_pesos: [(texto_norma, peso)]. Devuelve [(termino, veces)] de términos específicos recurrentes."""
+    cuenta = Counter()
+    for texto, peso in textos_pesos:
+        t = _alias(normalizar_texto(texto))
+        hallados = {m.group(0) for m in CORE.finditer(t)} | {m.group(0) for m in ENTIDAD_FUERTE.finditer(t)}
+        hallados |= set(re.findall(r"\blotes? \d+\b", t))
+        for h in hallados:
+            if h not in _GENERICOS and len(h) >= 3:
+                cuenta[h] += peso
+    return [(w, c) for w, c in cuenta.most_common(n_max) if c >= min_veces]
+
+
+def cargar_temas_normas(temas):
+    TEMAS_NORMAS.clear()
+    for term, _ in temas:
+        TEMAS_NORMAS.append((term, re.compile(r"\b" + re.escape(term) + r"\b")))
+
+
+class _Feedback:
+    """Aprende de tus S/N en la hoja Noticias: tokens que aparecen más en S suben, los de N bajan.
+    Solo se activa con >= MIN_ETIQUETAS de cada lado (con pocos datos sería ruido)."""
+    MIN_ETIQUETAS = 10
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.pos, self.neg = Counter(), Counter()
+        self.n_pos = self.n_neg = 0
+        self.titulares_n = []
+        self.activo = False
+
+    def entrenar(self, positivos, negativos):
+        self.reset()
+        for t in positivos:
+            self.pos.update(_tokens(t)); self.n_pos += 1
+        for t in negativos:
+            self.neg.update(_tokens(t)); self.n_neg += 1
+        self.titulares_n = list(negativos)[-80:]
+        self.activo = self.n_pos >= self.MIN_ETIQUETAS and self.n_neg >= self.MIN_ETIQUETAS
+
+    def ajuste(self, titular):
+        """(delta, motivo). Muy parecida a una N reciente => -4. Si no, log-odds de tokens, acotado a ±3."""
+        if not self.activo:
+            return 0.0, ""
+        for tn in self.titulares_n:
+            if misma_noticia(titular, tn):
+                return -4.0, "parecida a una que marcaste N -4"
+        score = 0.0
+        for w in _tokens(titular):
+            if self.pos[w] + self.neg[w] >= 3:
+                score += _ln((self.pos[w] + 1) / (self.n_pos + 2)) - _ln((self.neg[w] + 1) / (self.n_neg + 2))
+        delta = max(-3.0, min(3.0, 0.5 * score))
+        return (delta, f"feedback S/N {delta:+.1f}") if abs(delta) >= 0.5 else (0.0, "")
+
+
+FEEDBACK = _Feedback()
+
+
+# -----------------------------------------------------------------------------
+# PUNTAJE DE UNA NOTICIA
+# -----------------------------------------------------------------------------
+def _hay_ancla_hc(t, mercado):
+    """Ancla de HIDROCARBUROS: la noticia trata del sector, no solo de energía/minería/ambiente en general."""
+    reorg = bool(REORG_MINEM[0].search(t) and REORG_MINEM[1].search(t))
+    if CORE.search(t) or VOCAB_PERU.search(t) or TEMA_PERU.search(t) or mercado or reorg:
+        return True
+    # Osinergmin también regula electricidad y minería: solo ancla si la nota no es de eso
+    if ENTIDAD_FUERTE.search(t) and not (INFRA_ENERGIA.search(t) or MINERIA.search(t)):
+        return True
+    return bool(INCLUIR_ELECTRICIDAD and (INFRA_ENERGIA.search(t) or VOCAB_RENOVABLE.search(t)))
+
+
+def puntuar_noticia(titular, fuente="", fuente_url="", contexto="", seccion="", url="", etapa="final"):
+    """Devuelve (pts, motivos, ok, gris).
+    etapa='pre'  : solo titular, umbral laxo (decide a quién se le abre la página).
+    etapa='final': titular + resumen + sección/URL, umbral estricto y exige hecho concreto."""
+    texto = f"{titular}. {contexto}" if contexto else titular
+    _, razon = evaluar_relevancia(texto, "")                 # vocabulario/entidades/puntaje de normas
     m = re.search(r"(-?[\d.]+) pts \[(.*)\]", razon)
     pts, motivos = (float(m.group(1)), m.group(2)) if m else (0.0, "")
     motivos = [] if motivos == "sin señales" else [motivos]
-    t = normalizar_texto(titular)
+    t = normalizar_texto(texto)
+    tt = normalizar_texto(titular)
 
+    consumidor = bool(PRECIOS_DIA.search(tt) or SERVICIO_SIN_BONO.search(t) or CONSUMO_PUBLICO.search(t)
+                      or (BONO.search(t) and not BONO_CORP.search(t)))
     ruido_n = len(set(NO_SECTOR.findall(t)))
     if ruido_n:
-        resta = AJUSTE_NO_SECTOR * min(ruido_n, 3)      # cada palabra distinta resta; tope 3 palabras
+        resta = AJUSTE_NO_SECTOR * min(ruido_n, 3)
         pts -= resta; motivos.append(f"no sectorial -{resta:g}")
-    if TEMA_PERU.search(t):
+    if TEMA_PERU.search(t) and not consumidor:       # "precio del balón de gas hoy" ya no se premia por decir "balón de gas"
         pts += AJUSTE_TEMA; motivos.append(f"tema del momento +{AJUSTE_TEMA:g}")
-    if REORG_MINEM[0].search(t) and REORG_MINEM[1].search(t):
+    reorg = bool(REORG_MINEM[0].search(t) and REORG_MINEM[1].search(t))
+    if reorg:
         pts += AJUSTE_TEMA; motivos.append(f"reorganización Minem +{AJUSTE_TEMA:g}")
-    if VOCAB_PERU.search(t):
+    if (VOCAB_PERU.search(t) or (INCLUIR_ELECTRICIDAD and VOCAB_RENOVABLE.search(t))) and not consumidor:
         pts += AJUSTE_VOCAB; motivos.append(f"vocabulario del sector +{AJUSTE_VOCAB:g}")
     mercado = bool(MERCADO_INTL.search(t))
     if mercado:
         motivos.append("mercado internacional del petróleo")
-    extranjera = bool(EXTRANJERO.search(t) and not PERU.search(t)) and not mercado
-    if mercado:
-        pass
-    elif extranjera:
+    extranjera = bool(EXTRANJERO.search(tt) and not PERU.search(t)) and not mercado
+    if extranjera:
         pts -= AJUSTE_EXTRANJERO; motivos.append(f"extranjera -{AJUSTE_EXTRANJERO:g}")
-    elif not (PERU.search(t) or TEMA_PERU.search(t) or VOCAB_PERU.search(t)) and not es_fuente_peruana(fuente, fuente_url):
+    elif not mercado and not (PERU.search(t) or TEMA_PERU.search(t) or VOCAB_PERU.search(t)) \
+            and not es_fuente_peruana(fuente, fuente_url):
         pts -= AJUSTE_SIN_PERU; motivos.append(f"sin señal de Perú -{AJUSTE_SIN_PERU:g}")
 
-    if PRECIOS_DIA.search(t) or SERVICIO.search(t) or CONSUMO_PUBLICO.search(t):
+    if consumidor:
         pts -= AJUSTE_SERVICIO; motivos.append(f"servicio al consumidor -{AJUSTE_SERVICIO:g}")
+    if NO_HECHO_TIT.search(tt):
+        pts -= AJUSTE_EXPLICATIVA; motivos.append(f"nota explicativa/consejos -{AJUSTE_EXPLICATIVA:g}")
     if CANON_TRANSFERENCIA.search(t):
         pts -= AJUSTE_CANON; motivos.append(f"transferencia de canon -{AJUSTE_CANON:g}")
-    # Sin entidad del sector ni hecho concreto (regulación, contrato, proyecto...): nota genérica de opinión/contexto
-    txt_motivos = " ".join(motivos)
-    ancla = ("entidad" in txt_motivos or EVENTO_SECTOR.search(t) or TEMA_PERU.search(t) or VOCAB_PERU.search(t)
-             or mercado)
-    if not ancla:
-        pts -= AJUSTE_SIN_HECHO; motivos.append(f"sin hecho concreto -{AJUSTE_SIN_HECHO:g}")
 
-    ok = pts >= 3.0
+    # --- Sección del medio / PATH de la URL (sin el slug, para no confundir palabras del titular) ---
+    secs = normalizar_texto(seccion)
+    try:
+        segs = [x for x in urlsplit(url).path.lower().split("/") if x][:-1] if url else []
+    except Exception:
+        segs = []
+    secs = (secs + " " + " ".join(normalizar_texto(x) for x in segs)).strip()
+    es_opinion = bool(OPINION_SEC.search(secs) or OPINION_TIT.search(tt))
+    if es_opinion:
+        pts -= AJUSTE_OPINION; motivos.append(f"opinión -{AJUSTE_OPINION:g}")
+    if SECCION_RUIDO.search(secs):
+        pts -= AJUSTE_SECCION; motivos.append(f"sección no sectorial -{AJUSTE_SECCION:g}")
+    if not mercado and SECCION_MUNDO.search(secs):
+        pts -= AJUSTE_MUNDO; motivos.append(f"sección internacional -{AJUSTE_MUNDO:g}")
+
+    # --- Ancla de hidrocarburos: electricidad/renovables/minería/ambiente solos NO son el sector ---
+    hc = _hay_ancla_hc(t, mercado)
+    if not hc:
+        fuera = bool(INFRA_ENERGIA.search(t) or MINERIA.search(t) or AMBIENTE.search(t) or ENERGIA_GENERAL.search(t))
+        pts = min(pts, 1.5)
+        motivos.append("fuera de hidrocarburos (energía/minería/ambiente)" if fuera else "sin ancla de hidrocarburos")
+
+    # --- Hecho concreto (solo etapa final: el titular suelto no siempre lo muestra) ---
+    evento = bool(EVENTO_INST.search(t) or TEMA_PERU.search(t) or mercado or reorg)
+    if etapa == "final" and hc and not evento:
+        pts = min(pts, UMBRAL_FINAL - 0.1); motivos.append("sin hecho concreto (tope)")
+
+    # --- Contexto: normas recientes y tu feedback (solo suman si la noticia es de hidrocarburos) ---
+    if hc:
+        for term, rx in TEMAS_NORMAS:
+            if rx.search(t):
+                pts += AJUSTE_NORMAS; motivos.append(f"coincide con normas recientes ({term}) +{AJUSTE_NORMAS:g}")
+                break
+        delta, why = FEEDBACK.ajuste(titular)
+        if delta:
+            pts += delta; motivos.append(why)
+
+    umbral = UMBRAL_FINAL if etapa == "final" else UMBRAL_PRE
+    ok = pts >= umbral
     txt = " ".join(motivos)
-    # zona gris: dudosas útiles. Se excluyen las que ya se sabe que son ruido (electoral, minería, extranjera, redes)
-    ruido = extranjera or any(k in txt for k in ("no sectorial", "mineria", "ruido local", "servicio al consumidor",
-                                                "transferencia de canon", "sin hecho concreto"))
-    evaluar_noticia.gris = (not ok) and (not ruido) and pts >= GRIS_MIN
+    # zona gris: dudosas útiles (no las que ya se sabe que son ruido)
+    ruido = (extranjera or es_opinion or any(k in txt for k in (
+        "no sectorial", "mineria", "ruido local", "servicio al consumidor", "transferencia de canon",
+        "fuera de hidrocarburos", "sección no sectorial", "nota explicativa", "parecida a una que marcaste N")))
+    gris = (not ok) and (not ruido) and pts >= GRIS_MIN
+    return pts, motivos, ok, gris
+
+
+def evaluar_noticia(titular, fuente="", fuente_url="", **kw):
+    """Compatibilidad: (ok, razón). Deja .gris y .pts como atributos de la función."""
+    pts, motivos, ok, gris = puntuar_noticia(titular, fuente, fuente_url, **kw)
+    evaluar_noticia.gris, evaluar_noticia.pts = gris, pts
     return ok, f"{'✅' if ok else '❌'} {pts:.1f} pts [{', '.join(x for x in motivos if x) or 'sin señales'}]"
 
 
-def filtrar_relevantes(items):
+def filtrar_pre(items):
+    """Etapa 1 (solo titular, umbral laxo). Las que pasan se enriquecen (enlace real, fecha, resumen)."""
     ok = []
     for n in items:
         if TITULAR_GENERICO.search(n["titular"]) and not n.get("_enriquecida"):
             enriquecer(n)          # el titular real está en la página; con el genérico el puntaje sería 0
-        relevante, razon = evaluar_noticia(n["titular"], n.get("fuente", ""), n.get("fuente_url", ""))
-        log(f"   {'✅' if relevante else '❌'} {razon[2:].strip()[:70]:<70} | {n['titular'][:90]}")
-        if not relevante and evaluar_noticia.gris:
-            n["puntaje"] = razon.lstrip("✅❌ ").strip()
-            GRISES.append(n)
+        pts, motivos, relevante, gris = puntuar_noticia(
+            n["titular"], n.get("fuente", ""), n.get("fuente_url", ""), seccion=n.get("seccion", ""), etapa="pre")
+        razon = f"{pts:.1f} pts [{', '.join(x for x in motivos if x) or 'sin señales'}]"
+        log(f"   {'✅' if relevante else '❌'} {razon[:70]:<70} | {n['titular'][:90]}")
+        n["puntaje"], n["pre"] = razon, pts
         if relevante:
-            n["puntaje"] = razon.lstrip("✅❌ ").strip()   # ej: "7.0 pts [hidrocarburos x1, entidad fuerte]"
             ok.append(n)
+        elif gris:
+            GRISES.append(n)
     return ok
 
 
@@ -472,7 +677,6 @@ def elegir_unicas(noticias):
     return elegidas
 
 
-MAX_POR_ENTIDAD = 4      # que una sola entidad (p. ej. Petroperú) no ocupe todo el boletín
 ENTIDADES_TOPE = ["petroperu", "perupetro", "osinergmin", "minem", "oefa", "camisea"]
 
 
@@ -485,20 +689,26 @@ def prioridad(n):
 
 
 def ordenar_y_limitar(noticias):
-    """Más diarios la publicaron = más importante; empata el puntaje. Máx. MAX_POR_ENTIDAD por entidad."""
-    orden = sorted(noticias, key=prioridad, reverse=True)
+    """Ordena por prioridad. Máx. MAX_POR_ENTIDAD por entidad. Solo hay un techo de seguridad
+    (MAX_NOTICIAS, 0 = sin techo): la cantidad la decide el umbral de relevancia, no un número fijo."""
+    # Las de fecha NO verificada van siempre detrás de las verificadas (una nota de marzo re-fechada por Google
+    # no debe ganarle a una verificada, por buen puntaje que tenga); además es lo primero que cae con el techo.
+    orden = sorted(noticias, key=lambda n: (bool(n.get("fecha_verificada", True)), prioridad(n)), reverse=True)
     cuenta, final, omitidas = {}, [], 0
     for n in orden:
         t = normalizar_texto(n["titular"])
         ent = next((e for e in ENTIDADES_TOPE if e in t), None)
-        if ent and cuenta.get(ent, 0) >= MAX_POR_ENTIDAD:
+        if ent and MAX_POR_ENTIDAD and cuenta.get(ent, 0) >= MAX_POR_ENTIDAD:
             omitidas += 1
             continue
         cuenta[ent] = cuenta.get(ent, 0) + 1
         final.append(n)
     if omitidas:
         log(f"   ✂️  {omitidas} noticia(s) omitidas por tope de {MAX_POR_ENTIDAD} por entidad")
-    return final[:MAX_NOTICIAS]
+    if MAX_NOTICIAS and len(final) > MAX_NOTICIAS:
+        log(f"   🛑 Techo de seguridad: {len(final)} relevantes, se guardan las {MAX_NOTICIAS} de mayor prioridad")
+        final = final[:MAX_NOTICIAS]
+    return final
 
 
 # -----------------------------------------------------------------------------
@@ -627,14 +837,50 @@ def titular_desde_html(html_bytes):
     return _limpiar(tag.get("content")) if tag and tag.get("content") else ""
 
 
+_FECHA_URL = (re.compile(r"/(20\d{2})[/-](\d{1,2})[/-](\d{1,2})(?:[/-]|$)"),    # /2026/03/12/  o  /2026-03-12-
+              re.compile(r"(?<!\d)(20\d{2})(\d{2})(\d{2})(?!\d)"))               # ...-20260312
+def fecha_en_url(url):
+    """Fecha de publicación que muchos diarios ponen en el PATH de la URL. None si no hay."""
+    try:
+        path = urlsplit(url).path
+    except Exception:
+        return None
+    for rx in _FECHA_URL:
+        for m in rx.finditer(path):
+            try:
+                d = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            except ValueError:
+                continue
+            if date(2015, 1, 1) <= d <= HOY + timedelta(days=1):
+                return d
+    return None
+
+
+def aplicar_fechas(n, fecha_pagina=None):
+    """Fija n['fecha_real'] (la MÁS ANTIGUA entre URL y página: Google re-fecha notas viejas, nunca al revés),
+    n['fecha_verificada'] y n['obsoleta']. Sin ninguna fecha real queda 'sin verificar' (se confía en Google, con aviso)."""
+    conocidas = [d for d in (fecha_en_url(n.get("enlace", "")), fecha_pagina) if d]
+    if conocidas:
+        n["fecha_real"] = min(conocidas)
+        n["fecha_verificada"] = True
+        n["obsoleta"] = n["fecha_real"] < FECHA_DESDE - timedelta(days=HOLGURA_FECHA)
+    else:
+        n["fecha_verificada"] = False
+        n["obsoleta"] = False
+
+
 def enriquecer(n):
-    """Reemplaza el enlace de Google por el real y agrega n['resumen'] (vacío si no se pudo)."""
+    """Reemplaza el enlace de Google por el real, verifica la fecha real y agrega n['resumen'] (vacío si no se pudo)."""
     n["resumen"] = ""
     n["_enriquecida"] = True
     n["enlace"] = limpiar_url(resolver_url(n["enlace"]))
+    aplicar_fechas(n)                                   # 1º por la URL (no cuesta abrir la página)
     if "news.google.com" in n["enlace"]:
-        log(f"      ⚠️  Sin enlace real, no se extrae resumen: {n['titular'][:50]}")
+        log(f"      ⚠️  Sin enlace real, no se extrae resumen ni se verifica la fecha: {n['titular'][:50]}")
         return
+    if n["obsoleta"]:                                   # ya se sabe que es vieja: no gastar tiempo en abrirla
+        return
+    pagina = None
     try:
         r = requests.get(n["enlace"], headers=HEADERS_WEB, timeout=15)
         r.raise_for_status()
@@ -643,13 +889,10 @@ def enriquecer(n):
             if nuevo and not TITULAR_GENERICO.search(nuevo):
                 n["titular"] = nuevo
         n["resumen"] = resumen_desde_html(r.content, n["titular"])
-        real = fecha_desde_html(r.content)
-        if real:
-            n["fecha_real"] = real
-            if real < FECHA_DESDE - timedelta(days=2):    # holgura: notas actualizadas un día después
-                n["obsoleta"] = True
+        pagina = fecha_desde_html(r.content)
     except Exception as e:
         log(f"      ⚠️  No se pudo leer la página ({type(e).__name__}): {n['titular'][:50]}")
+    aplicar_fechas(n, pagina)
     time.sleep(1)
 
 
@@ -782,11 +1025,12 @@ def _fila(n, captura):
     valores = {
         "captura": captura,
         "titular": n["titular"],
-        "fecha_pub": n["fecha_pub"].strftime("%Y-%m-%d") if n.get("fecha_pub") else "",
+        # fecha REAL (URL/página) cuando se pudo verificar; si no, la de Google
+        "fecha_pub": (n.get("fecha_real") or n.get("fecha_pub")).strftime("%Y-%m-%d") if (n.get("fecha_real") or n.get("fecha_pub")) else "",
         "fuente": n.get("fuente", ""),
         "resumen": n.get("resumen", ""),     # automático; puedes editarlo en la hoja
         "enlace": n["enlace"],
-        "puntaje": n.get("puntaje", ""),
+        "puntaje": n.get("puntaje", "") + ("" if n.get("fecha_verificada", True) else " | ⚠ fecha sin verificar"),
         "enviar": "",                        # tú marcas S (o N)
         "enviado": "",                       # lo escribe enviar_correos.py
         "otras_fuentes": n.get("otras_fuentes", ""),
@@ -802,6 +1046,53 @@ def guardar(servicio, spreadsheet_id, noticias):
         valueInputOption="RAW", insertDataOption="INSERT_ROWS",
         body={"values": filas}).execute()
     log(f"   ✅ {len(filas)} noticias agregadas a '{HOJA_NOTICIAS}' (ENVIAR vacío: marca S las que quieras)")
+
+
+def _nombre_hoja_normas(servicio, spreadsheet_id):
+    """Misma regla que generar_boletin.py: HOJA_NORMAS o la primera pestaña (que no sea Noticias)."""
+    nombre = (os.getenv("HOJA_NORMAS") or "").strip()
+    if nombre:
+        return nombre
+    meta = servicio.spreadsheets().get(spreadsheetId=spreadsheet_id, fields="sheets.properties.title").execute()
+    titulos = [x["properties"]["title"] for x in meta["sheets"]]
+    return next((t for t in titulos if t != HOJA_NOTICIAS), titulos[0])
+
+
+def leer_temas_normas(servicio, spreadsheet_id, dias=30):
+    """Temas recurrentes de las normas capturadas en los últimos `dias` (hoja de Normas: A=corrida, B=título,
+    D=sumilla, G=S/N). Las marcadas N no cuentan; las S pesan el doble."""
+    hoja = _nombre_hoja_normas(servicio, spreadsheet_id)
+    resp = servicio.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=f"'{hoja}'!A2:H").execute()
+    desde = HOY - timedelta(days=dias)
+    textos = []
+    for f in resp.get("values", []):
+        f = list(f) + [""] * (8 - len(f))
+        try:
+            d = datetime.strptime(f[0].strip(), "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        marca = f[6].strip().upper()
+        if d < desde or marca == "N":
+            continue
+        textos.append((f"{f[1]} {f[3]}", 2 if marca == "S" else 1))
+    log(f"   📚 Normas de los últimos {dias} días usadas como contexto: {len(textos)}")
+    return temas_desde_normas(textos)
+
+
+def leer_feedback_noticias(servicio, spreadsheet_id):
+    """Titulares que marcaste S y N en la hoja Noticias (columna ENVIAR)."""
+    resp = servicio.spreadsheets().values().get(
+        spreadsheetId=spreadsheet_id, range=f"'{HOJA_NOTICIAS}'!A2:{ULTIMA_COL}").execute()
+    i_tit, i_env = CAMPOS.index("titular"), CAMPOS.index("enviar")
+    pos, neg = [], []
+    for f in resp.get("values", []):
+        f = list(f) + [""] * (len(CAMPOS) - len(f))
+        marca = f[i_env].strip().upper()
+        if f[i_tit].strip() and marca == "S":
+            pos.append(f[i_tit].strip())
+        elif f[i_tit].strip() and marca == "N":
+            neg.append(f[i_tit].strip())
+    return pos, neg
 
 
 # -----------------------------------------------------------------------------
@@ -839,7 +1130,8 @@ def mensaje_telegram(noticias):
         fuente = f" <i>({_h(n['fuente'])})</i>" if n["fuente"] else ""
         resumen = f"{_h(n['resumen'])}\n" if n.get("resumen") else ""
         otras = f"📎 También en: {_h(n['otras_fuentes'])}\n" if n.get("otras_fuentes") else ""
-        msg += f"{i}. <b>{_h(n['titular'])}</b>{fuente}\n{resumen}{otras}{_enlace_tg(n['enlace'])}\n\n"
+        sin_fecha = " ⚠️ <i>fecha sin verificar</i>" if not n.get("fecha_verificada", True) else ""
+        msg += f"{i}. <b>{_h(n['titular'])}</b>{fuente}{sin_fecha}\n{resumen}{otras}{_enlace_tg(n['enlace'])}\n\n"
     return msg.strip() + bloque_grises()
 
 
@@ -876,48 +1168,98 @@ def enviar_telegram_html(mensaje, bot_token, chat_id, limite=3800):
 
 
 # -----------------------------------------------------------------------------
+def procesar(crudas, enlaces_existentes=(), titulares_existentes=()):
+    """Pipeline de 2 etapas. La fecha REAL se verifica ANTES de ordenar/limitar (antes se recortaba a 15
+    primero y las viejas descartadas después dejaban hueco, o pasaban si la página no tenía fecha)."""
+    log("\n🔬 Etapa 1: filtro por titular (laxo)...")
+    candidatas = filtrar_pre(crudas)
+    nuevas = [n for n in candidatas if not any(misma_noticia(n["titular"], t) for t in titulares_existentes)]
+    log(f"\n   Pasan la etapa 1: {len(candidatas)} de {len(crudas)} | ya estaban en la hoja (7 días, por titular): "
+        f"{len(candidatas) - len(nuevas)}")
+
+    unicas = elegir_unicas(nuevas)
+    unicas.sort(key=lambda n: n.get("pre", 0), reverse=True)
+    if MAX_ENRIQUECER and len(unicas) > MAX_ENRIQUECER:
+        log(f"   ⏱️  Se verifican las {MAX_ENRIQUECER} de mayor puntaje (de {len(unicas)})")
+        unicas = unicas[:MAX_ENRIQUECER]
+    enriquecer_todas(unicas)
+
+    log("\n🔬 Etapa 2: titular + resumen + sección/URL (estricto), fecha real y enlace...")
+    finales, enlaces = [], set(enlaces_existentes)
+    for n in unicas:
+        if n.get("obsoleta"):
+            log(f"   🕰️  Descartada por fecha real {n['fecha_real']} (Google la mostró como reciente): {n['titular'][:60]}")
+            continue
+        if n["enlace"] in enlaces:       # ahora sí se compara el enlace REAL (antes era el redirect de Google)
+            log(f"   ♻️  Ya estaba en la hoja o repetida: {n['titular'][:60]}")
+            continue
+        pts, motivos, ok, gris = puntuar_noticia(
+            n["titular"], n.get("fuente", ""), n.get("fuente_url", ""), contexto=n.get("resumen", ""),
+            seccion=n.get("seccion", ""), url=n["enlace"], etapa="final")
+        razon = f"{pts:.1f} pts [{', '.join(x for x in motivos if x) or 'sin señales'}]"
+        n["puntaje"] = razon
+        log(f"   {'✅' if ok else '❌'} {razon[:78]:<78} | {n['titular'][:80]}")
+        if ok:
+            enlaces.add(n["enlace"])
+            finales.append(n)
+        elif gris:
+            GRISES.append(n)
+    return ordenar_y_limitar(finales)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="no escribe en Sheets ni envía Telegram")
     args = ap.parse_args()
 
     log(f"\n📰 BÚSQUEDA DE NOTICIAS — hoy {HOY.strftime('%a %d/%m')}, desde {FECHA_DESDE.strftime('%a %d/%m')} (when:{VENTANA})")
-    crudas = deduplicar(buscar_noticias())
+    log(f"   Techo de seguridad: {MAX_NOTICIAS or 'sin techo'} | electricidad: {'sí' if INCLUIR_ELECTRICIDAD else 'no'}")
+
+    spreadsheet_id = os.getenv("SPREADSHEET_ID")
+    creds = os.getenv("GOOGLE_CREDENTIALS_JSON")
+    if not args.dry_run and (not spreadsheet_id or not creds):
+        raise RuntimeError("Falta SPREADSHEET_ID o GOOGLE_CREDENTIALS_JSON")
+    servicio = conectar(creds) if (spreadsheet_id and creds) else None
+
+    queries = list(QUERIES) + (QUERIES_ELECTRICIDAD if INCLUIR_ELECTRICIDAD else [])
+    enlaces, titulares = set(), []
+    if servicio:
+        if not args.dry_run:
+            asegurar_hoja(servicio, spreadsheet_id)
+        # Contexto (nunca debe frenar la corrida: si algo falla se sigue sin él)
+        try:
+            enlaces, titulares = leer_existentes(servicio, spreadsheet_id)
+        except Exception as e:
+            log(f"   ⚠️  No se pudo leer la hoja Noticias: {e}")
+        try:
+            temas = leer_temas_normas(servicio, spreadsheet_id)
+            cargar_temas_normas(temas)
+            if temas:
+                log("   🧭 Temas recurrentes en tus normas: " + ", ".join(f"{t} ({c})" for t, c in temas))
+                base = normalizar_texto(" ".join(queries))
+                queries += [f'"{t}" Perú' for t, _ in temas[:4] if t not in base]
+        except Exception as e:
+            log(f"   ⚠️  No se pudo leer el contexto de normas: {e}")
+        try:
+            pos, neg = leer_feedback_noticias(servicio, spreadsheet_id)
+            FEEDBACK.entrenar(pos, neg)
+            log(f"   🗳️  Feedback en Noticias: {len(pos)} S / {len(neg)} N → "
+                f"{'activo' if FEEDBACK.activo else f'inactivo (necesita >= {FEEDBACK.MIN_ETIQUETAS} de cada uno)'}")
+        except Exception as e:
+            log(f"   ⚠️  No se pudo leer tu feedback de Noticias: {e}")
+
+    crudas = deduplicar(buscar_noticias(queries))
     log(f"   Únicas tras deduplicar: {len(crudas)}")
+    nuevas = procesar(crudas, enlaces, titulares)
+    log(f"\n   Noticias a guardar: {len(nuevas)}")
 
-    log("\n🔬 Filtrando relevancia...")
-    relevantes = filtrar_relevantes(crudas)
-
-    if not args.dry_run:
-        spreadsheet_id = os.getenv("SPREADSHEET_ID")
-        if not spreadsheet_id:
-            raise RuntimeError("Falta SPREADSHEET_ID")
-        servicio = conectar(os.getenv("GOOGLE_CREDENTIALS_JSON"))
-        asegurar_hoja(servicio, spreadsheet_id)
-        enlaces, titulares = leer_existentes(servicio, spreadsheet_id)
-        no_repetidas = [n for n in relevantes
-                        if n["enlace"] not in enlaces
-                        and not any(misma_noticia(n["titular"], t) for t in titulares)]
-        log(f"\n   Ya estaban en la hoja (últimos 7 días): {len(relevantes) - len(no_repetidas)}")
-        nuevas = ordenar_y_limitar(elegir_unicas(no_repetidas))
-        log(f"   Nuevas para guardar: {len(nuevas)}")
-        enriquecer_todas(nuevas)
-        viejas = [n for n in nuevas if n.get("obsoleta")]
-        for n in viejas:
-            log(f"   🕰️  Descartada por fecha real {n['fecha_real']} (Google la mostró como reciente): {n['titular'][:60]}")
-        nuevas = [n for n in nuevas if not n.get("obsoleta")]
-        if nuevas:
-            guardar(servicio, spreadsheet_id, nuevas)
-        enviar_telegram_html(mensaje_telegram(nuevas),
-                             os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID"))
-    else:
-        top = ordenar_y_limitar(elegir_unicas(relevantes))
-        enriquecer_todas(top)
-        for n in [n for n in top if n.get("obsoleta")]:
-            log(f"   🕰️  Descartada por fecha real {n['fecha_real']}: {n['titular'][:60]}")
-        top = [n for n in top if not n.get("obsoleta")]
+    if args.dry_run:
         log("\n[dry-run] Mensaje de Telegram que se enviaría:\n")
-        log(mensaje_telegram(top))
+        log(mensaje_telegram(nuevas))
+        return
+    if nuevas:
+        guardar(servicio, spreadsheet_id, nuevas)
+    enviar_telegram_html(mensaje_telegram(nuevas), os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID"))
 
 
 if __name__ == "__main__":
