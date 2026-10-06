@@ -207,7 +207,6 @@ NO_SECTOR = re.compile(r"\b(?:" + "|".join(PALABRAS_EXCLUIR) + r")\b")
 TEMA_PERU = re.compile(r"\b(?:balon(?:es)? de gas|escasez de (?:gas|gasolina|combustibles?|glp|gnv)|"
                        r"crisis (?:del |de )?(?:gas|gnv|glp|combustibles?)|gasoducto|desabastecimiento de "
                        r"(?:gas|combustibles?)|restablecimiento (?:de|del) (?:gas|suministro))\b")
-REORG_MINEM = (re.compile(r"\breorganiz\w*"), re.compile(r"\bminem\b|energia y minas"))
 # Sector peruano que evaluar_relevancia (hecho para títulos de normas) no puntúa: +3 una sola vez
 VOCAB_PERU = re.compile(r"\b(?:lotes? \d+|tgp|reguladores?|oleoducto norperuano|talara|balon(?:es)? de (?:gas|glp)|gas domiciliario|"
                         r"calidda|contugas|pluspetrol|petrotal|canon (?:petrolero|gasifero)|gas de camisea|"
@@ -238,6 +237,26 @@ AJUSTE_NO_SECTOR, AJUSTE_TEMA, AJUSTE_SIN_PERU, AJUSTE_EXTRANJERO, AJUSTE_VOCAB 
 SERVICIO = re.compile(r"\b(?:clases (?:virtuales|presenciales)|minedu|colegios?|bono\b|taxistas?|cuanto cuesta|"
                       r"pronostico|corte de luz|feriados?|horario de atencion)\b")
 AJUSTE_SERVICIO = 6.0
+# --- Capa editorial: el boletín es para empresas e instituciones del sector, no para el público ---
+# Precio/consumo al público y programas sociales (se suman a SERVICIO)
+CONSUMO_PUBLICO = re.compile(r"\b(?:precios? (?:del|de los|de) balon(?:es)?|ollas comunes|comedores populares|"
+                             r"vaso de leche|subsidio (?:al|a los) (?:hogares|usuarios)|pasajes?|tarifa del taxi)\b")
+# Transferencias de canon a regiones/municipios (finanzas locales; la regulación del canon es otro tema)
+CANON_TRANSFERENCIA = re.compile(r"\b(?:recib\w+|transfer\w+|distribuy\w+|girar\w*|trasladar\w*)\b.*\bcanon\b|"
+                                 r"\bcanon\b.*\b(?:recib\w+|transferenc\w+)\b")
+AJUSTE_CANON = 4.0
+# Hechos que le sirven a una empresa del sector: regulación, contratos/lotes, inversión/proyectos,
+# decisiones institucionales, mercado y suministro a nivel sistema.
+EVENTO_SECTOR = re.compile(
+    r"\b(?:adenda\w*|contrat\w+|convenios?|concesion\w*|licitacion\w*|subasta\w*|adjudic\w+|lotes? \w+|"
+    r"decretos? (?:supremos?|de urgencia|legislativo)|du \d|reglament\w+|resolucion\w*|proyectos? de ley|dictamen|"
+    r"congreso|consejo directivo|comites?|concursos?|directorio|reorganiz\w+|capital privado|activos|proinversion|"
+    r"inversion(?:es)?|gasoducto\w*|oleoducto\w*|refineria|exploracion|explotacion|yacimientos?|cuenca|reservas|"
+    r"descubrimiento|candamo|estudio de mercado|competencia|tarifa\w*|peaje\w*|fiscaliz\w+|sancion\w*|multas?|"
+    r"arbitraje|reguladores?|emergencia|masificacion|suministro|transmision|interconexion|generacion|eolic\w+|"
+    r"solar\w*|hidroelectric\w+|osinergmin|indecopi|perupetro|minem|oefa|senace|petroperu|tgp|calidda|contugas|"
+    r"coes|pcm|contraloria|camisea|talara)\b")
+AJUSTE_SIN_HECHO = 1.5
 # Temas que el boletín sí publica (según lo enviado): regulación, contratos/lotes, proyectos, mercado, reorganización.
 # NO decide si entra (eso lo hace el puntaje); solo sube su prioridad dentro del tope de MAX_NOTICIAS.
 TEMA_EDITORIAL = re.compile(r"\b(?:osinergmin|indecopi|reguladores?|pcm|concursos?|adenda\w*|contratos?|convenios?|"
@@ -265,8 +284,10 @@ def evaluar_noticia(titular, fuente="", fuente_url=""):
     motivos = [] if motivos == "sin señales" else [motivos]
     t = normalizar_texto(titular)
 
-    if NO_SECTOR.search(t):
-        pts -= AJUSTE_NO_SECTOR; motivos.append(f"no sectorial -{AJUSTE_NO_SECTOR:g}")
+    ruido_n = len(set(NO_SECTOR.findall(t)))
+    if ruido_n:
+        resta = AJUSTE_NO_SECTOR * min(ruido_n, 3)      # cada palabra distinta resta; tope 3 palabras
+        pts -= resta; motivos.append(f"no sectorial -{resta:g}")
     if TEMA_PERU.search(t):
         pts += AJUSTE_TEMA; motivos.append(f"tema del momento +{AJUSTE_TEMA:g}")
     if REORG_MINEM[0].search(t) and REORG_MINEM[1].search(t):
@@ -284,13 +305,22 @@ def evaluar_noticia(titular, fuente="", fuente_url=""):
     elif not (PERU.search(t) or TEMA_PERU.search(t) or VOCAB_PERU.search(t)) and not es_fuente_peruana(fuente, fuente_url):
         pts -= AJUSTE_SIN_PERU; motivos.append(f"sin señal de Perú -{AJUSTE_SIN_PERU:g}")
 
-    if PRECIOS_DIA.search(t) or SERVICIO.search(t):
+    if PRECIOS_DIA.search(t) or SERVICIO.search(t) or CONSUMO_PUBLICO.search(t):
         pts -= AJUSTE_SERVICIO; motivos.append(f"servicio al consumidor -{AJUSTE_SERVICIO:g}")
+    if CANON_TRANSFERENCIA.search(t):
+        pts -= AJUSTE_CANON; motivos.append(f"transferencia de canon -{AJUSTE_CANON:g}")
+    # Sin entidad del sector ni hecho concreto (regulación, contrato, proyecto...): nota genérica de opinión/contexto
+    txt_motivos = " ".join(motivos)
+    ancla = ("entidad" in txt_motivos or EVENTO_SECTOR.search(t) or TEMA_PERU.search(t) or VOCAB_PERU.search(t)
+             or mercado)
+    if not ancla:
+        pts -= AJUSTE_SIN_HECHO; motivos.append(f"sin hecho concreto -{AJUSTE_SIN_HECHO:g}")
 
     ok = pts >= 3.0
     txt = " ".join(motivos)
     # zona gris: dudosas útiles. Se excluyen las que ya se sabe que son ruido (electoral, minería, extranjera, redes)
-    ruido = extranjera or any(k in txt for k in ("no sectorial", "mineria", "ruido local", "servicio al consumidor"))
+    ruido = extranjera or any(k in txt for k in ("no sectorial", "mineria", "ruido local", "servicio al consumidor",
+                                                "transferencia de canon", "sin hecho concreto"))
     evaluar_noticia.gris = (not ok) and (not ruido) and pts >= GRIS_MIN
     return ok, f"{'✅' if ok else '❌'} {pts:.1f} pts [{', '.join(x for x in motivos if x) or 'sin señales'}]"
 
@@ -298,6 +328,8 @@ def evaluar_noticia(titular, fuente="", fuente_url=""):
 def filtrar_relevantes(items):
     ok = []
     for n in items:
+        if TITULAR_GENERICO.search(n["titular"]) and not n.get("_enriquecida"):
+            enriquecer(n)          # el titular real está en la página; con el genérico el puntaje sería 0
         relevante, razon = evaluar_noticia(n["titular"], n.get("fuente", ""), n.get("fuente_url", ""))
         log(f"   {'✅' if relevante else '❌'} {razon[2:].strip()[:70]:<70} | {n['titular'][:90]}")
         if not relevante and evaluar_noticia.gris:
@@ -775,6 +807,16 @@ def guardar(servicio, spreadsheet_id, noticias):
 # -----------------------------------------------------------------------------
 # TELEGRAM
 # -----------------------------------------------------------------------------
+def _h(t):
+    """Escapa texto para Telegram parse_mode=HTML."""
+    return htmllib.escape(t or "", quote=False)
+
+
+def _enlace_tg(url):
+    """Enlace con texto corto: la URL (aunque sea larguísima) queda oculta tras 'Leer nota'."""
+    return f'🔗 <a href="{htmllib.escape(url, quote=True)}">Leer nota</a>'
+
+
 def bloque_grises(max_n=6):
     vistos, out = set(), []
     for n in sorted(GRISES, key=lambda x: float(x["puntaje"].split()[0]), reverse=True):
@@ -782,22 +824,55 @@ def bloque_grises(max_n=6):
         if k in vistos:
             continue
         vistos.add(k)
-        out.append(f"• {n['titular'][:140]} ({n.get('fuente', '')})\n  🔗 {acortar(n['enlace'])}")
+        out.append(f"• {_h(n['titular'][:140])} ({_h(n.get('fuente', ''))})\n  {_enlace_tg(n['enlace'])}")
         if len(out) >= max_n:
             break
-    return ("\n\n🔎 Posibles (el filtro dudó, revisa):\n" + "\n".join(out)) if out else ""
+    return ("\n\n🔎 <b>Posibles</b> (el filtro dudó, revisa):\n" + "\n".join(out)) if out else ""
 
 
 def mensaje_telegram(noticias):
+    """Mensaje en HTML de Telegram. Cada noticia es un bloque autónomo (separado por línea en blanco)."""
     if not noticias:
         return "📰 Noticias del sector: hoy no se encontraron noticias relevantes." + bloque_grises()
-    msg = f"📰 Noticias del sector {HOY.strftime('%d/%m/%y')}\n\n"
+    msg = f"📰 <b>Noticias del sector {HOY.strftime('%d/%m/%y')}</b>\n\n"
     for i, n in enumerate(noticias, 1):
-        fuente = f" ({n['fuente']})" if n["fuente"] else ""
-        resumen = f"{n['resumen']}\n" if n.get("resumen") else ""
-        otras = f"📎 También en: {n['otras_fuentes']}\n" if n.get("otras_fuentes") else ""
-        msg += f"{i}. {n['titular']}{fuente}\n{resumen}{otras}🔗 {acortar(n['enlace'])}\n\n"
+        fuente = f" <i>({_h(n['fuente'])})</i>" if n["fuente"] else ""
+        resumen = f"{_h(n['resumen'])}\n" if n.get("resumen") else ""
+        otras = f"📎 También en: {_h(n['otras_fuentes'])}\n" if n.get("otras_fuentes") else ""
+        msg += f"{i}. <b>{_h(n['titular'])}</b>{fuente}\n{resumen}{otras}{_enlace_tg(n['enlace'])}\n\n"
     return msg.strip() + bloque_grises()
+
+
+def enviar_telegram_html(mensaje, bot_token, chat_id, limite=3800):
+    """Envía en HTML, partiendo por bloques para no pasar el límite de Telegram (4096).
+    Sin vista previa de enlaces (con enlaces largos de Google News ocupaba media pantalla)."""
+    if not bot_token or not chat_id:
+        log("   ⚠️  Sin TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID: no se envió el mensaje")
+        return False
+    partes, actual = [], ""
+    for bloque in mensaje.split("\n\n"):
+        if actual and len(actual) + len(bloque) + 2 > limite:
+            partes.append(actual.strip()); actual = ""
+        actual += bloque + "\n\n"
+    if actual.strip():
+        partes.append(actual.strip())
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+    for k, parte in enumerate(partes, 1):
+        try:
+            r = requests.post(url, data={"chat_id": chat_id, "text": parte, "parse_mode": "HTML",
+                                         "disable_web_page_preview": "true"}, timeout=15)
+            if r.status_code == 400:   # HTML mal formado: reenviar como texto plano en vez de perder el aviso
+                plano = re.sub(r"<[^>]+>", "", parte)
+                r = requests.post(url, data={"chat_id": chat_id, "text": htmllib.unescape(plano),
+                                             "disable_web_page_preview": "true"}, timeout=15)
+            r.raise_for_status()
+            log(f"   ✅ Telegram parte {k}/{len(partes)} enviada")
+            if k < len(partes):
+                time.sleep(1)
+        except Exception as e:
+            log(f"   ❌ Error Telegram (parte {k}): {e}")
+            return False
+    return True
 
 
 # -----------------------------------------------------------------------------
@@ -833,8 +908,8 @@ def main():
         nuevas = [n for n in nuevas if not n.get("obsoleta")]
         if nuevas:
             guardar(servicio, spreadsheet_id, nuevas)
-        enviar_telegram(mensaje_telegram(nuevas),
-                        os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID"))
+        enviar_telegram_html(mensaje_telegram(nuevas),
+                             os.getenv("TELEGRAM_BOT_TOKEN"), os.getenv("TELEGRAM_CHAT_ID"))
     else:
         top = ordenar_y_limitar(elegir_unicas(relevantes))
         enriquecer_todas(top)
