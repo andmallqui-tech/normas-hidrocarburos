@@ -679,6 +679,21 @@ def es_entidad_sector(texto):
     t = _alias(normalizar_texto(texto))
     m = ENTIDAD_FUERTE.search(t) or ENTIDAD_AMPLIA.search(t)
     return (True, m.group(0)) if m else (False, None)
+    
+def es_minem_osinergmin(sector, titulo, sumilla):
+    """MINEM y OSINERGMIN pasan SIEMPRE, antes de cualquier otro filtro."""
+    t = f"{sector} {titulo} {sumilla}".lower()   # sin normalizar: conserva "-OS/" y "-EM"
+    patrones = [
+        r'minem', r'osinergmin',
+        r'energ[ií]a y minas',
+        r'organismo supervisor de la inversi[oó]n en energ[ií]a y miner[ií]a',
+        r'\d{4}-em\b',                 # DS / RS: 010-2026-EM
+        r'\d{4}-os\b', r'\bos/',       # OSINERGMIN: 174-2026-OS/CD
+    ]
+    for p in patrones:
+        if re.search(p, t):
+            return True, p
+    return False, None
 
 def evaluar_relevancia(texto_candidato, sector, vectorizador=None, X_base=None):
     """texto_candidato = f"{titulo} {sumilla}" (SIN el sector). Devuelve (bool, razon)."""
@@ -1183,11 +1198,21 @@ def main():
     # -------------------------------------------------------------------------
     # PASO 8: FILTRAR RELEVANCIA
     # -------------------------------------------------------------------------
+    
     print("\n🔬 PASO 8: FILTRAR RELEVANCIA")
     aceptados = []
     prioritarios = []
 
     for i, c in enumerate(candidatos_unicos, 1):
+        # MINEM y OSINERGMIN pasan SIEMPRE
+        ok, patron = es_minem_osinergmin(c['sector'], c['titulo'], c['Sumilla'])
+        if ok:
+            aceptados.append(c)
+            prioritarios.append(c)
+            print(f"   [{i}/{len(candidatos_unicos)}] ⭐ MINEM/OSINERGMIN ({patron}): {c['titulo'][:60]}")
+            continue
+
+        # Resto de normas: filtro normal
         es_prioritario, _ = es_sector_prioritario(c['sector'])
         relevante, razon = evaluar_relevancia(
             f"{c['titulo']} {c['Sumilla']}", c['sector'], vectorizador, X_base
