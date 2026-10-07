@@ -1204,7 +1204,7 @@ def main():
     prioritarios = []
 
     for i, c in enumerate(candidatos_unicos, 1):
-        # MINEM y OSINERGMIN pasan SIEMPRE
+        # 1) MINEM y OSINERGMIN pasan SIEMPRE
         ok, patron = es_minem_osinergmin(c['sector'], c['titulo'], c['Sumilla'])
         if ok:
             aceptados.append(c)
@@ -1212,6 +1212,11 @@ def main():
             print(f"   [{i}/{len(candidatos_unicos)}] ⭐ MINEM/OSINERGMIN ({patron}): {c['titulo'][:60]}")
             continue
 
+        # 2) SECTORES A EXCLUIR: descarte duro, sin scoring
+        m = SECTOR_EXCLUIR.search(normalizar_texto(c['sector']))
+        if m:
+            print(f"   [{i}/{len(candidatos_unicos)}] 🚫 SECTOR EXCLUIDO ({m.group(0)}) [{c['sector'][:25]}]: {c['titulo'][:60]}")
+            continue
         # Resto de normas: filtro normal
         es_prioritario, _ = es_sector_prioritario(c['sector'])
         relevante, razon = evaluar_relevancia(
