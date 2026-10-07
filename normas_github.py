@@ -303,7 +303,6 @@ SECTORES_PRIORITARIOS = set([normalizar_texto(x) for x in [
     'ministerio de energia y minas',
     'osinergmin',
     'organismo supervisor de la inversion en energia y mineria',
-    'perupetro',
         # NUEVOS — Ambiente
     'minam',
 ]])
@@ -327,7 +326,8 @@ SECTORES_EXCLUIR = set([normalizar_texto(x) for x in [
     'vivienda', 'comunicaciones', 'justicia', 'relaciones exteriores', 'midis', 'midagri','mdlp',
     'osinfor', 'senamhi', 'trabajo y promocion del empleo', 'sernanp', 'desarrollo agrario y riego',
     'municipio', 'SENAMHI', 'SERNANP', 'SERVICIO NACIONAL DE AREAS NATURALES PROTEGIDAS POR EL ESTADO',
-    'JURADO NACIONAL DE ELECCIONES', 'GOBIERNOS LOCALES', 'MUNICIPALIDAD DISTRITAL', 'GOBIERNO REGIONAL',
+    'JURADO NACIONAL DE ELECCIONES', 'GOBIERNOS LOCALES', 'MUNICIPALIDAD DISTRITAL', 'GOBIERNO REGIONAL', 
+    'SERVICIO NACIONAL DE CERTIFICACIÓN AMBIENTAL PARA LAS INVERSIONES SOSTENIBLES'
 ]])
 
 # Palabras obligatorias ampliadas → al menos una debe aparecer para pasar al TF-IDF
