@@ -715,15 +715,15 @@ def ordenar_y_limitar(noticias):
 # ENLACE REAL + RESUMEN
 # -----------------------------------------------------------------------------
 def resolver_url(link):
-    """Google News entrega un redirect cifrado; esto obtiene la URL real del medio."""
     if "news.google.com" not in link or gnewsdecoder is None:
         return link
     try:
-        r = gnewsdecoder(link, interval=1)
+        r = gnewsdecoder(link, interval=2)
         if r.get("status") and r.get("decoded_url"):
             return r["decoded_url"]
+        log(f"      ⚠️  decoder falló: {str(r.get('message'))[:150]}")
     except Exception as e:
-        log(f"      ⚠️  No se pudo resolver el enlace: {e}")
+        log(f"      ⚠️  decoder {type(e).__name__}: {str(e)[:150]}")
     return link
 
 
