@@ -63,7 +63,7 @@ from math import log as _ln
 from normas_github import (evaluar_relevancia, enviar_telegram, normalizar_texto, _alias,
                            CORE, ENTIDAD_FUERTE, INFRA_ENERGIA, MINERIA, AMBIENTE, ENERGIA_GENERAL)
 
-HOJA_NOTICIAS = "Noticias"
+HOJA_NOTICIAS = "Noticias_old"
 # Orden de columnas (única fuente de verdad en este archivo). Debe coincidir con
 # CAMPOS_NOTICIAS de enviar_correos.py: ["captura","titular","fecha_pub","fuente","resumen",
 #                                         "enlace","puntaje","enviar","enviado"]
