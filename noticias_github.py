@@ -63,6 +63,7 @@ from math import log as _ln
 from normas_github import (evaluar_relevancia, enviar_telegram, normalizar_texto, _alias,
                            CORE, ENTIDAD_FUERTE, INFRA_ENERGIA, MINERIA, AMBIENTE, ENERGIA_GENERAL)
 
+HOJA_NOTICIAS = "Noticias"
 HOJA_NOTICIAS = "Noticias_old"
 # Orden de columnas (única fuente de verdad en este archivo). Debe coincidir con
 # CAMPOS_NOTICIAS de enviar_correos.py: ["captura","titular","fecha_pub","fuente","resumen",
@@ -150,8 +151,9 @@ def _quitar_seccion(titulo):
     m = _RX_SECCION.search(titulo)
     return (titulo[:m.start()], m.group(1).strip()) if m else (titulo, "")
 
+
 def parsear_rss(xml_texto):
-    """Devuelve lista de dicts {titular, fuente, enlace, fecha_pub, seccion, pub_dt}."""
+    """Devuelve lista de dicts {titular, fuente, enlace, fecha_pub, seccion}."""
     items = []
     root = ET.fromstring(xml_texto)
     for it in root.iter("item"):
@@ -161,47 +163,36 @@ def parsear_rss(xml_texto):
         fuente = (src_el.text or "").strip() if src_el is not None and src_el.text else ""
         fuente_url = (src_el.get("url") or "").strip() if src_el is not None else ""
 
-        titulo, seccion = _quitar_seccion(titulo)
+        titulo, seccion = _quitar_seccion(titulo)                          # "… | ECONOMIA" (sección del medio)
+        # Google agrega " - Fuente" al final del titular: se quita para no duplicarlo
         if fuente and titulo.endswith(f" - {fuente}"):
             titulo = titulo[: -len(fuente) - 3].strip()
         elif " - " in titulo and not fuente:
             titulo, fuente = titulo.rsplit(" - ", 1)
 
         try:
-            pub_dt = parsedate_to_datetime(it.findtext("pubDate") or "").astimezone(ZONA)
-            fecha_pub = pub_dt.date()
+            fecha_pub = parsedate_to_datetime(it.findtext("pubDate") or "").astimezone(ZONA).date()
         except Exception:
-            pub_dt, fecha_pub = None, None
+            fecha_pub = None
 
         titulo, seccion2 = _quitar_seccion(titulo)
         if titulo and enlace:
-            items.append({
-                "titular": titulo,
-                "fuente": fuente.strip(),
-                "fuente_url": fuente_url,
-                "enlace": enlace,
-                "fecha_pub": fecha_pub,
-                "pub_dt": pub_dt,
-                "seccion": seccion or seccion2
-            })
+            items.append({"titular": titulo, "fuente": fuente.strip(), "fuente_url": fuente_url,
+                          "enlace": enlace, "fecha_pub": fecha_pub, "seccion": seccion or seccion2})
     return items
 
 
 def buscar_noticias(queries=None):
     todas = []
-    limite_dt = datetime.now(ZONA) - timedelta(hours=36 if DIAS_ATRAS == 1 else 60)
-    
     for q in (queries or QUERIES):
         try:
             r = requests.get(url_rss(q, VENTANA), headers=HEADERS_HTTP, timeout=20)
             r.raise_for_status()
             items = parsear_rss(r.content)
             antes = len(items)
-            
-            # Filtro por horas exactas de pubDate
-            items = [n for n in items if (n["pub_dt"] is None or n["pub_dt"] >= limite_dt)][:MAX_POR_QUERY]
-            
-            log(f"   🔎 {q[:55]}... → {len(items)} resultados (de {antes}; límite {limite_dt.strftime('%d/%m %H:%M')})")
+            # Sin fecha de Google => se conserva, pero se verificará con la fecha real de la página/URL.
+            items = [n for n in items if not n["fecha_pub"] or n["fecha_pub"] >= FECHA_DESDE][:MAX_POR_QUERY]
+            log(f"   🔎 {q[:55]}... → {len(items)} resultados (de {antes}; desde {FECHA_DESDE})")
             todas.extend(items)
         except Exception as e:
             log(f"   ⚠️  Falló la consulta '{q[:40]}...': {e}")
@@ -273,7 +264,8 @@ REORG_MINEM = (re.compile(r"\b(?:reorganiz\w*|destrab\w*|meritocr\w*)\b"), re.co
 # Notas diarias de precios: son la misma noticia aunque cambie la fecha
 _PRECIO_TEMA = re.compile(r"\b(?:gasolina\w*|gnv|glp|diesel|combustibles?)\b")
 _PRECIO_PALABRA = re.compile(r"\b(?:precios?|cuanto (?:esta|cuesta|cuestan)|mas barata|mas cara)\b")
-_PRECIO_DIA = re.compile(r"\b(?:hoy|ayer|este|lunes|martes|miercoles|miércoles|jueves|viernes|sabado|sábado|domingo|\d{1,2} de [a-z]+)\b", re.I)
+_PRECIO_DIA = re.compile(r"\b(?:hoy|lunes|martes|miercoles|jueves|viernes|sabado|domingo|\d{1,2} de [a-z]+)\b")
+
 
 class _PrecioDia:
     """Nota diaria de precios de combustibles ('...precios... hoy, lunes 5 de octubre'). Una nota de política
@@ -542,14 +534,11 @@ def filtrar_pre(items):
     ok = []
     for n in items:
         if TITULAR_GENERICO.search(n["titular"]) and not n.get("_enriquecida"):
-            enriquecer(n)
+            enriquecer(n)          # el titular real está en la página; con el genérico el puntaje sería 0
         pts, motivos, relevante, gris = puntuar_noticia(
             n["titular"], n.get("fuente", ""), n.get("fuente_url", ""), seccion=n.get("seccion", ""), etapa="pre")
         razon = f"{pts:.1f} pts [{', '.join(x for x in motivos if x) or 'sin señales'}]"
-        
-        hora = n["pub_dt"].strftime("%d/%m %H:%M") if n.get("pub_dt") else "SIN FECHA"
-        log(f"   {'✅' if relevante else '❌'} [{hora}] {razon[:60]:<60} | {n['titular'][:80]}")
-        
+        log(f"   {'✅' if relevante else '❌'} {razon[:70]:<70} | {n['titular'][:90]}")
         n["puntaje"], n["pre"] = razon, pts
         if relevante:
             ok.append(n)
@@ -727,15 +716,15 @@ def ordenar_y_limitar(noticias):
 # ENLACE REAL + RESUMEN
 # -----------------------------------------------------------------------------
 def resolver_url(link):
+    """Google News entrega un redirect cifrado; esto obtiene la URL real del medio."""
     if "news.google.com" not in link or gnewsdecoder is None:
         return link
     try:
-        r = gnewsdecoder(link, interval=2)
+        r = gnewsdecoder(link, interval=1)
         if r.get("status") and r.get("decoded_url"):
             return r["decoded_url"]
-        log(f"      ⚠️  decoder falló: {str(r.get('message'))[:150]}")
     except Exception as e:
-        log(f"      ⚠️  decoder {type(e).__name__}: {str(e)[:150]}")
+        log(f"      ⚠️  No se pudo resolver el enlace: {e}")
     return link
 
 
