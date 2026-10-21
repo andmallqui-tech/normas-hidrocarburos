@@ -102,12 +102,8 @@ def _env_int(nombre, defecto):
 MAX_NOTICIAS = _env_int("NOTICIAS_TOPE", 40)
 MAX_ENRIQUECER = _env_int("NOTICIAS_MAX_ENRIQUECER", 70)     # a cuántas se les abre la página (enlace real, fecha, resumen)
 MAX_POR_ENTIDAD = _env_int("NOTICIAS_MAX_POR_ENTIDAD", 6)    # que una sola entidad no ocupe todo el boletín
-UMBRAL_PRE = 1.5          # etapa 1 (solo titular): laxo, para no perder candidatas
+UMBRAL_PRE = 2.0          # etapa 1 (solo titular): laxo, para no perder candidatas
 UMBRAL_FINAL = 3.0        # etapa 2 (titular + resumen + sección): estricto
-UMBRAL_SIN_RESUMEN = 2.5  # etapa 2 cuando NO hay resumen (no se abre la página): se decide solo por titular
-# Enlace real de la nota: por defecto NO se resuelve (se usa el enlace de Google News, acortado). Más rápido y sin bloqueos.
-# RESOLVER_ENLACE=1 lo reactiva (da resumen y verifica fecha, pero Google suele bloquear a GitHub Actions).
-RESOLVER_ENLACE = (os.getenv("RESOLVER_ENLACE") or "").strip().lower() in ("1", "true", "si", "sí")
 HOLGURA_FECHA = 1         # días de tolerancia sobre FECHA_DESDE al verificar la fecha real
 # Electricidad/renovables: por defecto FUERA (el boletín es de hidrocarburos). INCLUIR_ELECTRICIDAD=1 los reactiva.
 INCLUIR_ELECTRICIDAD = (os.getenv("INCLUIR_ELECTRICIDAD") or "").strip().lower() in ("1", "true", "si", "sí")
@@ -311,8 +307,6 @@ EVENTO_INST = re.compile(
     r"restablec\w+|suspend\w+|paraliz\w+|falla|rotura|derrame\w*|paro|bloque\w*|"
     r"destrab\w+|privatiz\w+|venta de activos|subsidio\w*|fondo de estabilizacion|banda de precios|"
     r"importacion\w*|exportacion\w*|"
-    r"compra\w*|comprar\w*|vender\w*|vendi\w+|venta de (?:petroleo|crudo|gas|combustibles?|barriles)|retom\w+|"
-    r"memorando\w*|cooperacion|alianza\w*|abastec\w+|suministr\w+|"
     r"anunci\w+|present\w+|propon\w+|propuesta\w*|plan(?:es)?|salvataje|reestructur\w+|solicit\w+|pid\w+|"
     r"investig\w+|denunci\w+|concertacion|conect\w+|ampli\w+|construc\w+|obras?|inici\w+|culmin\w+|lanz\w+|"
     r"prepublic\w+|norma\w*|acuerd\w+|negoci\w+|cierr\w+|evalu\w+|plantea\w*|convoc\w+|"
@@ -426,21 +420,10 @@ FEEDBACK = _Feedback()
 # -----------------------------------------------------------------------------
 # PUNTAJE DE UNA NOTICIA
 # -----------------------------------------------------------------------------
-# Palabras que delatan hidrocarburos aunque el titular no diga "hidrocarburos/Petroperú" (antes caían a 0 pts:
-# "campaña de perforación de 2.600 pozos", "16 millones de barriles de petróleo"...). Solo valen con señal de Perú.
-ANCLA_HC_EXTRA = re.compile(r"\b(?:crudo|barril(?:es)?|pozos?|perforacion|refineri\w+|oleoducto\w*|gasoducto\w*|"
-                            r"petroleo|petrolera\w*|petrolero\w*|gas natural|gnl|gnv|glp|diesel|combustibles?|"
-                            r"lotes? [a-z]?-?\d+|upstream|downstream|estaciones? de servicio|grifos?)\b")
-# "Petro-Perú", "Petro Perú" -> "Petroperú" (así lo escriben varios diarios y el filtro no lo reconocía)
-_PETRO_GUION = re.compile(r"(?i)\bpetro[\s\-\u2010\u2011\u2013]+per[uú]\b")
-
-
 def _hay_ancla_hc(t, mercado):
     """Ancla de HIDROCARBUROS: la noticia trata del sector, no solo de energía/minería/ambiente en general."""
     reorg = bool(REORG_MINEM[0].search(t) and REORG_MINEM[1].search(t))
     if CORE.search(t) or VOCAB_PERU.search(t) or TEMA_PERU.search(t) or mercado or reorg:
-        return True
-    if ANCLA_HC_EXTRA.search(t) and PERU.search(t):
         return True
     # Osinergmin también regula electricidad y minería: solo ancla si la nota no es de eso
     if ENTIDAD_FUERTE.search(t) and not (INFRA_ENERGIA.search(t) or MINERIA.search(t)):
@@ -448,12 +431,10 @@ def _hay_ancla_hc(t, mercado):
     return bool(INCLUIR_ELECTRICIDAD and (INFRA_ENERGIA.search(t) or VOCAB_RENOVABLE.search(t)))
 
 
-def puntuar_noticia(titular, fuente="", fuente_url="", contexto="", seccion="", url="", etapa="final",
-                    extra="", cobertura=1):
+def puntuar_noticia(titular, fuente="", fuente_url="", contexto="", seccion="", url="", etapa="final"):
     """Devuelve (pts, motivos, ok, gris).
     etapa='pre'  : solo titular, umbral laxo (decide a quién se le abre la página).
     etapa='final': titular + resumen + sección/URL, umbral estricto y exige hecho concreto."""
-    titular = _PETRO_GUION.sub("Petroperú", titular)
     texto = f"{titular}. {contexto}" if contexto else titular
     _, razon = evaluar_relevancia(texto, "")                 # vocabulario/entidades/puntaje de normas
     m = re.search(r"(-?[\d.]+) pts \[(.*)\]", razon)
@@ -514,29 +495,10 @@ def puntuar_noticia(titular, fuente="", fuente_url="", contexto="", seccion="", 
         pts = min(pts, 1.5)
         motivos.append("fuera de hidrocarburos (energía/minería/ambiente)" if fuera else "sin ancla de hidrocarburos")
 
-    # --- Pisos: no dejar caer noticias claramente del sector por falta de una palabra en la lista ---
-    #  * entidad fuerte (Petroperú, Perupetro...) o tema de hidrocarburos con señal de Perú -> mínimo UMBRAL_FINAL
-    #  * precio internacional del crudo (Brent/Ormuz) -> mínimo UMBRAL_FINAL
-    # Nunca si es consumo/servicio, opinión, ruido sectorial o extranjera.
-    limpia = not (consumidor or ruido_n or extranjera or es_opinion)
-    if limpia and hc and pts < UMBRAL_FINAL and (
-            ENTIDAD_FUERTE.search(t) or (ANCLA_HC_EXTRA.search(t) and PERU.search(t))):
-        pts = UMBRAL_FINAL; motivos.append(f"piso entidad/tema del sector {UMBRAL_FINAL:g}")
-    elif limpia and mercado and pts < UMBRAL_FINAL:
-        pts = UMBRAL_FINAL; motivos.append(f"piso mercado del petróleo {UMBRAL_FINAL:g}")
-
-    umbral = UMBRAL_FINAL if etapa == "final" and contexto else (UMBRAL_SIN_RESUMEN if etapa == "final" else UMBRAL_PRE)
-
     # --- Hecho concreto (solo etapa final: el titular suelto no siempre lo muestra) ---
-    # El "hecho concreto" se busca también en los titulares de los otros diarios que dieron la misma noticia
-    # (el representante del grupo puede traer el titular más flojo) y una nota en >=3 diarios ya es hecho.
-    t_grupo = normalizar_texto(extra) if extra else ""
-    evento = bool(EVENTO_INST.search(t) or (t_grupo and EVENTO_INST.search(t_grupo))
-                  or TEMA_PERU.search(t) or mercado or reorg or cobertura >= 3)
-    # Las notas SOBRE una entidad fuerte (Petroperú, Perupetro...) no se topan: casi siempre son hecho para el sector.
-    entidad = bool(ENTIDAD_FUERTE.search(t) or (t_grupo and ENTIDAD_FUERTE.search(t_grupo)))
-    if etapa == "final" and hc and not evento and not entidad:
-        pts = min(pts, umbral - 0.1); motivos.append("sin hecho concreto (tope)")
+    evento = bool(EVENTO_INST.search(t) or TEMA_PERU.search(t) or mercado or reorg)
+    if etapa == "final" and hc and not evento:
+        pts = min(pts, UMBRAL_FINAL - 0.1); motivos.append("sin hecho concreto (tope)")
 
     # --- Contexto: normas recientes y tu feedback (solo suman si la noticia es de hidrocarburos) ---
     if hc:
@@ -548,6 +510,7 @@ def puntuar_noticia(titular, fuente="", fuente_url="", contexto="", seccion="", 
         if delta:
             pts += delta; motivos.append(why)
 
+    umbral = UMBRAL_FINAL if etapa == "final" else UMBRAL_PRE
     ok = pts >= umbral
     txt = " ".join(motivos)
     # zona gris: dudosas útiles (no las que ya se sabe que son ruido)
@@ -570,7 +533,7 @@ def filtrar_pre(items):
     ok = []
     for n in items:
         if TITULAR_GENERICO.search(n["titular"]) and not n.get("_enriquecida"):
-            enriquecer(n, forzar=True)   # el titular real está en la página; con el genérico el puntaje sería 0
+            enriquecer(n)          # el titular real está en la página; con el genérico el puntaje sería 0
         pts, motivos, relevante, gris = puntuar_noticia(
             n["titular"], n.get("fuente", ""), n.get("fuente_url", ""), seccion=n.get("seccion", ""), etapa="pre")
         razon = f"{pts:.1f} pts [{', '.join(x for x in motivos if x) or 'sin señales'}]"
@@ -710,7 +673,6 @@ def elegir_unicas(noticias):
     for g in grupos:
         n = elegir_mejor(g)
         n["cobertura"] = len(g)          # cuántos diarios la publicaron: mide la importancia
-        n["_titulares_grupo"] = " . ".join(x["titular"] for x in g)
         elegidas.append(n)
     return elegidas
 
@@ -752,49 +714,16 @@ def ordenar_y_limitar(noticias):
 # -----------------------------------------------------------------------------
 # ENLACE REAL + RESUMEN
 # -----------------------------------------------------------------------------
-_FALLOS_DECODER = 0     # fallos seguidos: si Google nos está bloqueando, no se pierde tiempo reintentando
-
-
-def _decodificar_base64(link):
-    """Respaldo sin red: los ids antiguos de Google News (CBM...) llevan la URL real dentro del base64."""
-    try:
-        m = re.search(r"/articles/([^/?#]+)", link)
-        if not m:
-            return None
-        b = m.group(1)
-        crudo = base64.urlsafe_b64decode(b + "=" * (-len(b) % 4))
-        u = re.search(rb"https?://[^\s\x00-\x1f\"<>]+", crudo)
-        return u.group(0).decode("utf-8", "ignore") if u else None
-    except Exception:
-        return None
-
-
 def resolver_url(link):
-    """Google News entrega un redirect cifrado; esto obtiene la URL real del medio.
-    1) base64 directo (gratis)  2) googlenewsdecoder con reintentos  3) si todo falla, el enlace de Google."""
-    global _FALLOS_DECODER
-    if "news.google.com" not in link:
+    """Google News entrega un redirect cifrado; esto obtiene la URL real del medio."""
+    if "news.google.com" not in link or gnewsdecoder is None:
         return link
-    directa = _decodificar_base64(link)
-    if directa and "news.google.com" not in directa:
-        return directa
-    if gnewsdecoder is None:
-        return link
-    intentos = 1 if _FALLOS_DECODER >= 6 else 3
-    motivo = ""
-    for i in range(intentos):
-        try:
-            r = gnewsdecoder(link, interval=2)
-            if r.get("status") and r.get("decoded_url"):
-                _FALLOS_DECODER = 0
-                return r["decoded_url"]
-            motivo = str(r.get("message", ""))[:100]
-        except Exception as e:
-            motivo = f"{type(e).__name__}: {str(e)[:100]}"
-        if i < intentos - 1:
-            time.sleep(3 * (i + 1))
-    _FALLOS_DECODER += 1
-    log(f"      ⚠️  No se pudo resolver el enlace ({motivo or 'sin detalle'})")
+    try:
+        r = gnewsdecoder(link, interval=1)
+        if r.get("status") and r.get("decoded_url"):
+            return r["decoded_url"]
+    except Exception as e:
+        log(f"      ⚠️  No se pudo resolver el enlace: {e}")
     return link
 
 
@@ -831,15 +760,6 @@ def acortar(url, largo_max=60):
         except Exception:
             continue
     return url
-
-
-def enlace_corto(n):
-    """Enlace acortado de la noticia (se calcula una vez y se reutiliza en la hoja y en Telegram)."""
-    if "enlace_corto" not in n:
-        n["enlace_corto"] = acortar(n["enlace"])
-        if n["enlace_corto"] != n["enlace"]:
-            time.sleep(0.3)               # cortesía con is.gd / TinyURL
-    return n["enlace_corto"]
 
 
 def _limpiar(t):
@@ -949,19 +869,11 @@ def aplicar_fechas(n, fecha_pagina=None):
         n["obsoleta"] = False
 
 
-def enriquecer(n, forzar=False):
-    """Reemplaza el enlace de Google por el real, verifica la fecha real y agrega n['resumen'] (vacío si no se pudo).
-    Con RESOLVER_ENLACE apagado (por defecto) no hace nada: se queda el enlace de Google y la fecha de Google.
-    forzar=True lo hace igual (solo para titulares genéricos tipo Andina, cuyo título real está en la página)."""
+def enriquecer(n):
+    """Reemplaza el enlace de Google por el real, verifica la fecha real y agrega n['resumen'] (vacío si no se pudo)."""
     n["resumen"] = ""
     n["_enriquecida"] = True
-    if not RESOLVER_ENLACE and not forzar:
-        n["fecha_verificada"] = True      # ya se filtró por la fecha de Google (FECHA_DESDE); sin aviso en cada nota
-        n["obsoleta"] = False
-        return
     n["enlace"] = limpiar_url(resolver_url(n["enlace"]))
-    if "news.google.com" in n["enlace"] and not RESOLVER_ENLACE and not forzar:
-        return
     aplicar_fechas(n)                                   # 1º por la URL (no cuesta abrir la página)
     if "news.google.com" in n["enlace"]:
         log(f"      ⚠️  Sin enlace real, no se extrae resumen ni se verifica la fecha: {n['titular'][:50]}")
@@ -986,15 +898,12 @@ def enriquecer(n, forzar=False):
 
 def enriquecer_todas(noticias):
     log(f"\n📝 Resolviendo enlaces y extrayendo resúmenes ({len(noticias)})...")
-    if not RESOLVER_ENLACE:
-        log("   ℹ️  Enlace de Google News (acortado), sin resumen: el filtro decide por titular y titulares del grupo.")
-    elif gnewsdecoder is None:
+    if gnewsdecoder is None:
         log("   ⚠️  Falta 'googlenewsdecoder' (pip install googlenewsdecoder): sin resúmenes.")
     for i, n in enumerate(noticias, 1):
         if not n.get("_enriquecida"):
             enriquecer(n)
-        if RESOLVER_ENLACE:
-            log(f"   [{i}/{len(noticias)}] {'✅' if n['resumen'] else '➖ sin resumen'} {n['titular'][:60]}")
+        log(f"   [{i}/{len(noticias)}] {'✅' if n['resumen'] else '➖ sin resumen'} {n['titular'][:60]}")
 
 
 # -----------------------------------------------------------------------------
@@ -1120,7 +1029,7 @@ def _fila(n, captura):
         "fecha_pub": (n.get("fecha_real") or n.get("fecha_pub")).strftime("%Y-%m-%d") if (n.get("fecha_real") or n.get("fecha_pub")) else "",
         "fuente": n.get("fuente", ""),
         "resumen": n.get("resumen", ""),     # automático; puedes editarlo en la hoja
-        "enlace": enlace_corto(n),
+        "enlace": n["enlace"],
         "puntaje": n.get("puntaje", "") + ("" if n.get("fecha_verificada", True) else " | ⚠ fecha sin verificar"),
         "enviar": "",                        # tú marcas S (o N)
         "enviado": "",                       # lo escribe enviar_correos.py
@@ -1199,14 +1108,14 @@ def _enlace_tg(url):
     return f'🔗 <a href="{htmllib.escape(url, quote=True)}">Leer nota</a>'
 
 
-def bloque_grises(max_n=10):
+def bloque_grises(max_n=6):
     vistos, out = set(), []
     for n in sorted(GRISES, key=lambda x: float(x["puntaje"].split()[0]), reverse=True):
         k = normalizar_texto(n["titular"])[:60]
         if k in vistos:
             continue
         vistos.add(k)
-        out.append(f"• {_h(n['titular'][:140])} ({_h(n.get('fuente', ''))})\n  {_enlace_tg(enlace_corto(n))}")
+        out.append(f"• {_h(n['titular'][:140])} ({_h(n.get('fuente', ''))})\n  {_enlace_tg(n['enlace'])}")
         if len(out) >= max_n:
             break
     return ("\n\n🔎 <b>Posibles</b> (el filtro dudó, revisa):\n" + "\n".join(out)) if out else ""
@@ -1222,7 +1131,7 @@ def mensaje_telegram(noticias):
         resumen = f"{_h(n['resumen'])}\n" if n.get("resumen") else ""
         otras = f"📎 También en: {_h(n['otras_fuentes'])}\n" if n.get("otras_fuentes") else ""
         sin_fecha = " ⚠️ <i>fecha sin verificar</i>" if not n.get("fecha_verificada", True) else ""
-        msg += f"{i}. <b>{_h(n['titular'])}</b>{fuente}{sin_fecha}\n{resumen}{otras}{_enlace_tg(enlace_corto(n))}\n\n"
+        msg += f"{i}. <b>{_h(n['titular'])}</b>{fuente}{sin_fecha}\n{resumen}{otras}{_enlace_tg(n['enlace'])}\n\n"
     return msg.strip() + bloque_grises()
 
 
@@ -1286,8 +1195,7 @@ def procesar(crudas, enlaces_existentes=(), titulares_existentes=()):
             continue
         pts, motivos, ok, gris = puntuar_noticia(
             n["titular"], n.get("fuente", ""), n.get("fuente_url", ""), contexto=n.get("resumen", ""),
-            seccion=n.get("seccion", ""), url=n["enlace"], etapa="final",
-            extra=n.get("_titulares_grupo", ""), cobertura=n.get("cobertura", 1))
+            seccion=n.get("seccion", ""), url=n["enlace"], etapa="final")
         razon = f"{pts:.1f} pts [{', '.join(x for x in motivos if x) or 'sin señales'}]"
         n["puntaje"] = razon
         log(f"   {'✅' if ok else '❌'} {razon[:78]:<78} | {n['titular'][:80]}")
