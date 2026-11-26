@@ -29,7 +29,7 @@ jobs:
       - uses: browser-actions/setup-chrome@v1
 
       - name: Instalar dependencias
-        run: pip install requests pandas selenium google-api-python-client google-auth
+        run: pip install requests pandas selenium beautifulsoup4 google-api-python-client google-auth
 
       - name: Descargar, filtrar y detectar cambios
         env:
@@ -49,4 +49,5 @@ jobs:
           name: proyectos-energia-diagnostico
           path: |
             api_spley_capturada.json
-            api_spley_detalle.json
+            ficha_muestra.html
+            ficha_ver_mas_muestra.html
