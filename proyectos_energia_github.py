@@ -467,252 +467,189 @@ def normalizar(reg):
     }
 
 
-# ---- capturar las llamadas que hace la FICHA del portal --------------------
+# ---- leer la FICHA tal como la muestra el portal (HTML renderizado) -----------
+# La ficha es una página Angular con bloques rotulados (SUMILLA, TÍTULO, AUTOR PRINCIPAL...).
+# Se lee esa página con Selenium y se interpreta con los rótulos exactos.
 
-def _escalares(obj, ruta=()):
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            yield from _escalares(v, ruta + (k,))
-    elif isinstance(obj, list):
-        for i, v in enumerate(obj):
-            yield from _escalares(v, ruta + (i,))
-    else:
-        yield ruta, obj
+URLS_FICHA = ["{base}/spley-portal/#/expediente/{p}/{n}",
+              "{base}/spley-portal/#/congreso/expediente/{p}/{n}"]
+_url_ok = {"i": 0}                     # cuál de las dos rutas funcionó (se recuerda)
+_TXT_VACIO = {"", "-", "--", "- -"}
 
 
-def _fijar(obj, ruta, valor):
-    for k in ruta[:-1]:
-        obj = obj[k]
-    obj[ruta[-1]] = valor
+def _txt(nodo):
+    return re.sub(r"\s+", " ", nodo.get_text(" ", strip=True)).strip() if nodo else ""
 
 
-def _enlaces(pl, plano_muestra):
-    """Dónde aparecen (en la URL o el cuerpo) los datos del proyecto de muestra."""
-    inv = {}
-    for k, v in plano_muestra.items():
-        if v in (None, "") or isinstance(v, bool):
+def _limpiar_celda(td):
+    for t in td.select(".p-column-title"):
+        t.decompose()
+    return td
+
+
+def parsear_ficha(html):
+    """HTML renderizado de la ficha -> dict con los datos del proyecto."""
+    from bs4 import BeautifulSoup
+    sp = BeautifulSoup(html, "html.parser")
+    fi = {"numero_fmt": "", "tipo": "Ley", "fecha_pres": "", "proponente": "", "titulo": "", "sumilla": "",
+          "principal": "", "coautores": [], "adherentes": [], "grupo": "", "estado": "", "eventos": [],
+          "comisiones": "", "ver_mas": ""}
+    leg = sp.select_one("fieldset legend")
+    m = re.match(r"^(.*?)\s+N[°º.]*\s*(\S+)\s*$", _txt(leg)) if leg else None
+    if m:
+        fi["numero_fmt"] = m.group(2)
+        if "resolu" in normalizar_texto(m.group(1)):
+            fi["tipo"] = "Resolución legislativa"
+    campos = {}
+    for div in sp.select("div.campo-detalle"):
+        lab = div.select_one("label.campo-label")
+        val = div.select_one(".campo-valor")
+        if not lab or not val:
             continue
-        s = str(v)
-        if len(s) >= 3 or re.search(r"num|per", k.lower()):
-            inv.setdefault(s, k)
-    u = urlsplit(pl["url"])
-    enl = [(("seg", i), inv[s]) for i, s in enumerate(u.path.split("/")) if s in inv]
-    enl += [(("q", n), inv[v]) for n, v in parse_qsl(u.query) if v in inv]
-    if isinstance(pl.get("body"), (dict, list)):
-        enl += [(("body", r), inv[str(v)]) for r, v in _escalares(pl["body"]) if str(v) in inv]
-    return enl
+        clave = normalizar_texto(_txt(lab))
+        if val.select_one("ul.firmantes-list"):
+            campos[clave] = [_txt(a) for a in val.select("a.link-firmante") if _txt(a)]
+            vm = val.select_one("a.ver-mas")
+            if vm and vm.get("href"):
+                fi["ver_mas"] = vm["href"]
+        else:
+            t = _txt(val)
+            campos[clave] = "" if t in _TXT_VACIO else t
+    g = lambda k: campos.get(k, "") if isinstance(campos.get(k, ""), str) else ""
+    fi.update(fecha_pres=g("fecha de presentacion"), proponente=g("proponente"), titulo=g("titulo"),
+              sumilla=g("sumilla"), grupo=g("grupo parlamentario"), estado=g("ultimo estado procesal"))
+    pr = campos.get("autor principal") or []
+    fi["principal"] = pr[0] if pr else ""
+    fi["coautores"] = campos.get("coautores") or []
+    fi["adherentes"] = campos.get("adherentes") if isinstance(campos.get("adherentes"), list) else []
+
+    # SEGUIMIENTOS: la tabla viene con lo más nuevo arriba -> se invierte para dejar el orden cronológico
+    ultimas_com = ""
+    for fs in sp.select("fieldset"):
+        lg = fs.select_one("legend")
+        if lg and normalizar_texto(_txt(lg)).startswith("seguimientos"):
+            filas = []
+            for tr in fs.select("tbody tr"):
+                tds = tr.find_all("td", recursive=False)
+                if len(tds) < 4:
+                    continue
+                tds = [_limpiar_celda(td) for td in tds]
+                fecha = a_fecha(_txt(tds[0]))
+                if fecha is None or pd.isna(fecha):
+                    continue
+                coms = [_txt(li) for li in tds[2].select("li") if _txt(li)]
+                filas.append({"fecha": fecha, "estado": _txt(tds[1]), "detalle": _txt(tds[3]),
+                              "comisiones": coms})
+            filas.reverse()
+            filas.sort(key=lambda e: e["fecha"])          # estable: conserva el orden entre misma fecha
+            fi["eventos"] = filas
+            for e in reversed(filas):
+                if e["comisiones"]:
+                    ultimas_com = "; ".join(e["comisiones"])
+                    break
+    # ESTUDIO EN COMISIONES (comisión que lo estudia ahora)
+    estudio = [re.sub(r"^Comisi[oó]n\s+(?:de\s+(?:la\s+|los\s+|las\s+)?|del\s+)?", "", _txt(n))
+               for n in sp.select(".ec-comision-nombre")]
+    fi["comisiones"] = "; ".join(dict.fromkeys(x for x in estudio if x)) or ultimas_com
+    if not fi["estado"] and fi["eventos"]:
+        fi["estado"] = fi["eventos"][-1]["estado"]
+    return fi
 
 
-def _instanciar(pl, plano_destino):
-    u = urlsplit(pl["url"])
-    segs = u.path.split("/")
-    qs = dict(parse_qsl(u.query))
-    cuerpo = copy.deepcopy(pl.get("body"))
-    for (donde, ref), clave in pl["enlaces"]:
-        nuevo = plano_destino.get(clave)
-        if nuevo in (None, ""):
-            continue
-        if donde == "seg":
-            segs[ref] = str(nuevo)
-        elif donde == "q":
-            qs[ref] = str(nuevo)
-        elif donde == "body" and cuerpo is not None:
-            _fijar(cuerpo, tuple(ref), nuevo)
-    url = u._replace(path="/".join(segs), query=urlencode(qs)).geturl()
-    return url, cuerpo
-
-
-def capturar_detalle(api_lista, link_muestra, plano_muestra):
-    """Abre la ficha de un proyecto y guarda las llamadas que hace el portal."""
+def _nuevo_driver():
     from selenium import webdriver
     from selenium.webdriver.chrome.options import Options
-
-    print("\n🌐 Capturando la API de la ficha de un proyecto...")
     opts = Options()
     for a in ("--headless=new", "--no-sandbox", "--disable-dev-shm-usage",
               "--disable-gpu", "--window-size=1920,1080", f"user-agent={UA}"):
         opts.add_argument(a)
-    opts.set_capability("goog:loggingPrefs", {"performance": "ALL"})
-    driver = webdriver.Chrome(options=opts)
-    driver.set_page_load_timeout(90)
-    plantillas = []
-    try:
-        driver.get(BASE + "/spley-portal/")
-        time.sleep(8)
-        driver.execute_script("window.location.hash = arguments[0];", link_muestra.split("#", 1)[1])
-        time.sleep(12)
-        peticiones, respuestas = {}, set()
-        for entrada in driver.get_log("performance"):
-            msg = json.loads(entrada["message"])["message"]
-            p = msg.get("params", {})
-            if msg.get("method") == "Network.requestWillBeSent":
-                req = p.get("request", {})
-                if SERVICIO in req.get("url", ""):
-                    peticiones[p["requestId"]] = req
-            elif msg.get("method") == "Network.responseReceived":
-                if SERVICIO in p.get("response", {}).get("url", ""):
-                    respuestas.add(p["requestId"])
-        lista_base = api_lista["url"].split("?")[0]
-        vistos = set()
-        for rid, req in peticiones.items():
-            url, metodo = req.get("url", ""), req.get("method", "GET")
-            if metodo == "OPTIONS" or url.split("?")[0] == lista_base or rid not in respuestas:
-                continue
-            try:
-                datos = json.loads(driver.execute_cdp_cmd(
-                    "Network.getResponseBody", {"requestId": rid}).get("body") or "null")
-            except Exception:
-                continue
-            if not datos:
-                continue
-            post = req.get("postData")
-            if post is None and req.get("hasPostData"):
-                try:
-                    post = driver.execute_cdp_cmd("Network.getRequestPostData", {"requestId": rid}).get("postData")
-                except Exception:
-                    post = None
-            try:
-                cuerpo = json.loads(post) if post else None
-            except Exception:
-                cuerpo = None
-            clave = (metodo, url.split("?")[0])
-            if clave in vistos:
-                continue
-            vistos.add(clave)
-            pl = {"url": url, "method": metodo, "body": cuerpo,
-                  "headers": {k: v for k, v in req.get("headers", {}).items()
-                              if k.lower() in ("content-type", "accept", "authorization")}}
-            pl["enlaces"] = _enlaces(pl, plano_muestra)
-            print(f"   • {metodo} {url}  (enlaces al proyecto: {len(pl['enlaces'])})")
-            pl["muestra"] = json.dumps(datos, ensure_ascii=False)[:20000]
-            plantillas.append(pl)
-    finally:
-        driver.quit()
-    with open(CACHE_DETALLE, "w", encoding="utf-8") as f:
-        json.dump(plantillas, f, ensure_ascii=False, indent=2)
-    if not plantillas:
-        print("   ⚠️ No se capturó ninguna llamada de ficha: se usarán sólo los datos de la lista.")
-    return [p for p in plantillas if p["enlaces"]]
+    d = webdriver.Chrome(options=opts)
+    d.set_page_load_timeout(60)
+    return d
 
 
-def leer_ficha(sesion, plantillas, plano_destino):
-    """Repite las llamadas de la ficha para otro proyecto. Devuelve (datos, n_errores)."""
-    out, errores = {}, 0
-    for i, pl in enumerate(plantillas):
-        url, cuerpo = _instanciar(pl, plano_destino)
-        for intento in range(3):
-            try:
-                if pl["method"].upper() == "POST":
-                    r = sesion.post(url, json=cuerpo, headers=pl["headers"], timeout=60)
-                else:
-                    r = sesion.get(url, headers=pl["headers"], timeout=60)
-                r.raise_for_status()
-                out[f"ep{i}"] = r.json()
+def _cargar_ficha(driver, periodo, numero):
+    """Abre la ficha y devuelve su HTML ya renderizado (o None)."""
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.common.by import By
+    for k in range(len(URLS_FICHA)):
+        i = (_url_ok["i"] + k) % len(URLS_FICHA)
+        url = URLS_FICHA[i].format(base=BASE, p=periodo, n=numero)
+        driver.get("about:blank")          # fuerza a Angular a cargar el expediente de cero
+        driver.get(url)
+        try:
+            WebDriverWait(driver, 25).until(lambda d: d.find_elements(By.CSS_SELECTOR, "div.estado-valor"))
+        except Exception:
+            continue
+        _url_ok["i"] = i
+        for _ in range(12):                # la tabla de seguimientos carga después
+            if driver.find_elements(By.CSS_SELECTOR, "p-table tbody tr"):
                 break
-            except Exception as e:
-                if intento == 2:
+            time.sleep(0.5)
+        time.sleep(0.5)
+        return driver.page_source
+    return None
+
+
+def leer_fichas(items):
+    """items: filas de la lista general. Devuelve ({id: ficha}, n_errores)."""
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.common.by import By
+    out, errores, driver, muestras = {}, 0, None, 0
+    print(f"\n📄 Leyendo {len(items)} fichas del portal (≈6-10 s cada una)...")
+    try:
+        for k, f in enumerate(items, 1):
+            try:
+                if driver is None or k % 60 == 0:      # reinicia Chrome de vez en cuando (memoria)
+                    if driver:
+                        driver.quit()
+                    driver = _nuevo_driver()
+                html = _cargar_ficha(driver, f["periodo"], f["numero"])
+                if not html:
                     errores += 1
-                    print(f"      ⚠️ ficha {url[-60:]}: {e}")
-                time.sleep(2 * (intento + 1))
-    return (out or None), errores
-
-
-# ---- interpretar la ficha (nombres de campo por patrón, como _tomar) --------
-
-def recorrer(obj):
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            yield k, v
-            yield from recorrer(v)
-    elif isinstance(obj, list):
-        for x in obj:
-            yield from recorrer(x)
-
-
-def primero(det, patrones, excluir=r"id$"):
-    for p in patrones:
-        for k, v in recorrer(det):
-            if re.search(p, k.lower()) and not re.search(excluir, k.lower()) \
-                    and isinstance(v, (str, int, float)) and not isinstance(v, bool) and v != "":
-                return v
-    return ""
-
-
-def _nombre_rol(el):
-    if isinstance(el, str):
-        return el.strip(), ""
-    if not isinstance(el, dict):
-        return "", ""
-    nombre = " ".join(str(v) for k, v in el.items()
-                      if re.search(r"nom|ape", k.lower()) and not re.search(r"id$|tipo|grupo|partido|bancada|comision", k.lower())
-                      and isinstance(v, str) and v)
-    if not nombre:
-        nombre = " ".join(str(v) for v in el.values() if isinstance(v, str) and v and not v.isdigit())[:80]
-    rol = " ".join(str(v) for k, v in el.items()
-                   if re.search(r"tipo|rol|condicion|calidad", k.lower()) and isinstance(v, str))
-    return nombre.strip(), rol.lower()
-
-
-def extraer_autores(det):
-    principal, co, vistos = "", [], set()
-    for k, v in recorrer(det):
-        if isinstance(v, list) and v and re.search(r"autor|firmante|congresista|proponente", k.lower()):
-            for el in v:
-                nombre, rol = _nombre_rol(el)
-                if not nombre or nombre in vistos:
+                    print(f"   ⚠️ No cargó la ficha de {f['id']}")
                     continue
-                vistos.add(nombre)
-                es_co = re.search(r"co.?autor|adherente", rol)
-                if not principal and not es_co and (re.search(r"autor|principal|primer", rol) or not rol):
-                    principal = nombre
-                else:
-                    co.append(nombre)
-    if not principal and co:
-        principal, co = co[0], co[1:]
-    return principal, co
-
-
-def extraer_eventos(det):
-    """Lista de movimientos del expediente: [{'fecha': Timestamp, 'estado': str, 'detalle': str}]."""
-    mejor, mejor_pref = [], False
-    for k, v in recorrer(det):
-        if not (isinstance(v, list) and v and all(isinstance(x, dict) for x in v)):
-            continue
-        if not any(re.search(r"fec", kk.lower()) for kk in v[0]):
-            continue
-        pref = bool(re.search(r"seguimiento|historial|movimiento|tramite|accion", k.lower()))
-        if (pref, len(v)) > (mejor_pref, len(mejor)):
-            mejor, mejor_pref = v, pref
-    eventos = []
-    for el in mejor:
-        fecha = a_fecha(next((x for kk, x in el.items() if re.search(r"fec", kk.lower()) and x), None))
-        estado = next((str(x) for kk, x in el.items()
-                       if re.search(r"estado", kk.lower()) and not re.search(r"id$", kk.lower())
-                       and isinstance(x, str) and x), "")
-        detalle = next((str(x) for kk, x in el.items()
-                        if re.search(r"desc|detalle|accion|asunto|observ|sumilla", kk.lower())
-                        and isinstance(x, str) and x), "")
-        if fecha is not None and not pd.isna(fecha):
-            eventos.append({"fecha": fecha, "estado": estado.strip(), "detalle": detalle.strip()})
-    eventos.sort(key=lambda e: e["fecha"])
-    return eventos
-
-
-def extraer_comisiones(det, fallback=""):
-    nombres = []
-    for k, v in recorrer(det):
-        if re.search(r"comision", k.lower()) and not re.search(r"id$|fec", k.lower()):
-            for x in (v if isinstance(v, list) else [v]):
-                if isinstance(x, str) and x.strip():
-                    nombres.append(x.strip())
-                elif isinstance(x, dict):
-                    n = next((str(y) for kk, y in x.items() if re.search(r"nom|desc|comision", kk.lower())
-                              and not re.search(r"id$", kk.lower()) and isinstance(y, str) and y), "")
-                    if n:
-                        nombres.append(n)
-    if not nombres and fallback:
-        nombres = [str(fallback)]
-    return "; ".join(dict.fromkeys(nombres))
+                if muestras == 0:
+                    with open("ficha_muestra.html", "w", encoding="utf-8") as fh:
+                        fh.write(html)
+                fi = parsear_ficha(html)
+                if not fi["sumilla"] and not fi["titulo"]:
+                    errores += 1
+                    print(f"   ⚠️ Ficha de {f['id']} sin sumilla ni título (¿cambió el diseño?)")
+                    continue
+                # "Ver más...": la ficha muestra sólo algunos coautores; se intenta traer la lista completa
+                if fi["ver_mas"]:
+                    try:
+                        driver.get("about:blank")
+                        driver.get(BASE + "/spley-portal/" + fi["ver_mas"].lstrip("/"))
+                        WebDriverWait(driver, 15).until(lambda d: d.find_elements(By.CSS_SELECTOR, "a.link-firmante"))
+                        time.sleep(1)
+                        html2 = driver.page_source
+                        if muestras == 0:
+                            with open("ficha_ver_mas_muestra.html", "w", encoding="utf-8") as fh:
+                                fh.write(html2)
+                        co2 = parsear_ficha(html2)["coautores"]
+                        if len(co2) > len(fi["coautores"]):
+                            fi["coautores"] = co2
+                    except Exception:
+                        pass
+                muestras += 1
+                out[f["id"]] = fi
+            except Exception as e:
+                errores += 1
+                print(f"   ⚠️ Error leyendo {f['id']}: {str(e)[:120]}")
+                try:
+                    driver.quit()
+                except Exception:
+                    pass
+                driver = None
+            if k % 20 == 0:
+                print(f"   … fichas leídas: {k}/{len(items)}")
+    finally:
+        if driver:
+            driver.quit()
+    print(f"   ✅ Fichas leídas: {len(out)}/{len(items)} · con sumilla: {sum(1 for x in out.values() if x['sumilla'])}")
+    return out, errores
 
 
 RX_DICTAMEN = re.compile(r"dictamen")
@@ -762,29 +699,32 @@ def puntaje(tags, claves, comision, confianza):
     return min(100, p)
 
 
-def construir_fila(base, det, prev):
+def construir_fila(base, fi, prev):
     """Une lista + ficha en una fila final. Si la ficha falló, conserva lo de la corrida anterior."""
     r = {k: v for k, v in base.items() if k not in ("autores_lista", "comision", "_reg")}
-    principal, co, eventos = "", [], []
-    if det:
-        principal, co = extraer_autores(det)
-        eventos = extraer_eventos(det)
-        r["sumilla"] = r["sumilla"] or str(primero(det, [r"sumilla"]))
-        r["titulo"] = r["titulo"] or str(primero(det, [r"titulo"]))
-        r["grupo"] = str(r["grupo"] or primero(det, [r"grupo", r"bancada"]))
-        r["proponente"] = r["proponente"] or str(primero(det, [r"desproponente", r"proponente"]))
-        r["comisiones"] = extraer_comisiones(det, base["comision"])
-        r["estado"] = str(r["estado"] or primero(det, [r"desestado", r"estado"]) or
-                          (eventos[-1]["estado"] if eventos else ""))
-        hitos, dictamen, hist, cerrado, cierre_txt, cierre_fecha = analizar_tramite(eventos, r["estado"])
+    r["link"] = URLS_FICHA[_url_ok["i"]].format(base=BASE, p=base["periodo"], n=base["numero"]) \
+        if base.get("periodo") and base.get("numero") else base.get("link", "")
+    if fi:
+        r["numero_fmt"] = fi["numero_fmt"] or r["numero_fmt"]
+        r["tipo"] = fi["tipo"]
+        r["fecha_pres"] = fi["fecha_pres"] or r["fecha_pres"]
+        r["sumilla"] = fi["sumilla"] or r["sumilla"]
+        r["titulo"] = fi["titulo"] or r["titulo"]
+        r["grupo"] = fi["grupo"] or str(r["grupo"])
+        r["proponente"] = fi["proponente"] or str(r["proponente"])
+        r["comisiones"] = fi["comisiones"] or str(base["comision"])
+        r["estado"] = fi["estado"] or str(r["estado"])
+        hitos, dictamen, hist, cerrado, cierre_txt, cierre_fecha = analizar_tramite(fi["eventos"], r["estado"])
         r.update(hitos=hitos, dictamen=dictamen, historial=hist, cerrado=cerrado,
                  cierre_txt=cierre_txt, cierre_fecha=cierre_fecha)
-        r["fecha_mov"] = eventos[-1]["fecha"].strftime("%d/%m/%Y") if eventos else ""
-        r["autores"] = "; ".join([principal] + co) if principal else str(base["autores_lista"])
-        r["principal"], r["coautores"] = principal or str(base["autores_lista"]), co
+        r["fecha_mov"] = fi["eventos"][-1]["fecha"].strftime("%d/%m/%Y") if fi["eventos"] else ""
+        principal = fi["principal"] or str(base["autores_lista"])
+        r["principal"], r["coautores"] = principal, fi["coautores"]
+        r["autores"] = "; ".join([principal] + fi["coautores"]) if principal else "; ".join(fi["coautores"])
     elif prev:
         for k in ("sumilla", "autores", "principal", "coautores", "grupo", "comisiones", "hitos",
-                  "dictamen", "historial", "cerrado", "cierre_txt", "cierre_fecha", "fecha_mov"):
+                  "dictamen", "historial", "cerrado", "cierre_txt", "cierre_fecha", "fecha_mov",
+                  "numero_fmt", "tipo"):
             r[k] = prev.get(k, r.get(k))
         r["estado"] = r["estado"] or prev.get("estado", "")
         if not r.get("cerrado") and TERMINAL.search(str(r["estado"] or "")):   # cierre visto sólo en la lista
@@ -1124,39 +1064,22 @@ def main():
     descartados = revisados - len(energia)
     print(f"\n📊 Revisados: {revisados} · Energía: {len(energia)} · Descartados: {descartados}")
 
-    # --- API de la ficha -------------------------------------------------------
-    plantillas = []
-    muestra = next((f for f in energia if not previos.get(f["id"], {}).get("cerrado") and f["link"]), None)
-    if muestra:
-        try:
-            plantillas = capturar_detalle(api, muestra["link"], _plano(muestra["_reg"]))
-        except Exception as e:
-            errores += 1
-            print(f"   ⚠️ No se pudo capturar la ficha: {e}")
-    sesion = requests.Session()
-    sesion.headers.update({"User-Agent": UA, "Origin": BASE, "Referer": BASE + "/spley-portal/"})
-    sesion.headers.update(api.get("headers") or {})
+    # --- leer las fichas (Selenium) -------------------------------------------
+    pendientes = [f for f in energia if not (previos.get(f["id"], {}).get("cerrado"))]
+    fichas, n_err = leer_fichas(pendientes)
+    errores += n_err
 
-    # --- leer cada ficha y detectar cambios -----------------------------------
+    # --- construir filas y detectar cambios -----------------------------------
     rows, a_guardar, eventos = [], [], []
-    for i, f in enumerate(energia, 1):
+    for f in energia:
         prev = previos.get(f["id"])
         if prev and prev.get("cerrado"):            # cerrado: deja de monitorearse
             rows.append(prev)
             continue
-        det = None
-        if plantillas:
-            det, n_err = leer_ficha(sesion, plantillas, _plano(f["_reg"]))
-            errores += n_err
-            if det is None:
-                errores += 1
-            time.sleep(0.5)
-        r = construir_fila(f, det, prev)
+        r = construir_fila(f, fichas.get(f["id"]), prev)
         eventos += comparar(prev, r)
         rows.append(r)
         a_guardar.append((r, prev))
-        if i % 20 == 0:
-            print(f"   … fichas leídas: {i}/{len(energia)}")
 
     nuevos = [e for e in eventos if e["tipo"] == "nuevo"]
     modificados = [e for e in eventos if e["tipo"] == "cambio"]
