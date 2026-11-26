@@ -595,6 +595,11 @@ def leer_fichas(items):
     """items: filas de la lista general. Devuelve ({id: ficha}, n_errores)."""
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.common.by import By
+    try:                                   # falla de inmediato (antes de abrir Chrome) si falta la librería
+        import bs4  # noqa: F401
+    except ImportError:
+        raise RuntimeError("Falta la librería beautifulsoup4. Agrégala a requirements.txt "
+                           "o al paso 'pip install' del workflow (pip install beautifulsoup4).")
     out, errores, driver, muestras = {}, 0, None, 0
     print(f"\n📄 Leyendo {len(items)} fichas del portal (≈6-10 s cada una)...")
     try:
