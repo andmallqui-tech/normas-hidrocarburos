@@ -1,5 +1,5 @@
 # Guardar en: .github/workflows/diag_api_ficha.yml  (se corre a mano, dura ~2 min)
-name: Diagnostico API de la ficha
+name: Diagnostico API de la ficha 2
 on:
   workflow_dispatch:
 jobs:
@@ -12,10 +12,10 @@ jobs:
         with:
           python-version: "3.11"
       - uses: browser-actions/setup-chrome@v1
-      - run: pip install selenium
-      - run: python diag_api_ficha.py
+      - run: pip install selenium requests
+      - run: python diag_api_ficha2.py
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: diag-api-ficha
-          path: diag_api_ficha.json
+          name: diag-api-ficha2
+          path: diag_api_ficha2.json
