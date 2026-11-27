@@ -82,6 +82,7 @@ HOJA_PROY = (os.getenv("HOJA_PROYECTOS") or "Proyectos").strip()
 HOJA_CORR = (os.getenv("HOJA_CORRIDAS") or "Corridas").strip()
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
+COMPLETA = (os.getenv("COMPLETA") or "").strip().lower() in ("1", "true", "si", "sí")   # forzar lectura completa
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
 
@@ -563,8 +564,16 @@ def _nuevo_driver():
     for a in ("--headless=new", "--no-sandbox", "--disable-dev-shm-usage",
               "--disable-gpu", "--window-size=1920,1080", f"user-agent={UA}"):
         opts.add_argument(a)
+    opts.page_load_strategy = "eager"          # no espera imágenes/estilos pesados
     d = webdriver.Chrome(options=opts)
     d.set_page_load_timeout(60)
+    try:                                       # no descargar imágenes ni fuentes (no se usan)
+        d.execute_cdp_cmd("Network.enable", {})
+        d.execute_cdp_cmd("Network.setBlockedURLs", {"urls": [
+            "*.png", "*.jpg", "*.jpeg", "*.gif", "*.svg", "*.webp", "*.ico",
+            "*.woff", "*.woff2", "*.ttf", "*fonts.googleapis.com*", "*fonts.gstatic.com*"]})
+    except Exception:
+        pass
     return d
 
 
@@ -578,20 +587,26 @@ def _cargar_ficha(driver, periodo, numero):
         driver.get("about:blank")          # fuerza a Angular a cargar el expediente de cero
         driver.get(url)
         try:
-            WebDriverWait(driver, 25).until(lambda d: d.find_elements(By.CSS_SELECTOR, "div.estado-valor"))
+            WebDriverWait(driver, 20).until(lambda d: d.find_elements(By.CSS_SELECTOR, "div.estado-valor"))
         except Exception:
             continue
         _url_ok["i"] = i
-        for _ in range(12):                # la tabla de seguimientos carga después
-            if driver.find_elements(By.CSS_SELECTOR, "p-table tbody tr"):
-                break
-            time.sleep(0.5)
-        time.sleep(0.5)
+        try:                               # la tabla de seguimientos carga después (espera sólo lo necesario)
+            WebDriverWait(driver, 6, poll_frequency=0.2).until(
+                lambda d: d.find_elements(By.CSS_SELECTOR, "p-table tbody tr td[colspan]") or
+                          len(d.find_elements(By.CSS_SELECTOR, "p-table tbody tr")) >= 1)
+        except Exception:
+            pass
+        try:                               # la comisión que estudia el proyecto (puede no existir: máx. 1.5 s)
+            WebDriverWait(driver, 1.5, poll_frequency=0.2).until(
+                lambda d: d.find_elements(By.CSS_SELECTOR, ".ec-comision-nombre"))
+        except Exception:
+            pass
         return driver.page_source
     return None
 
 
-def leer_fichas(items):
+def leer_fichas_selenium(items):
     """items: filas de la lista general. Devuelve ({id: ficha}, n_errores)."""
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.common.by import By
@@ -622,20 +637,24 @@ def leer_fichas(items):
                     errores += 1
                     print(f"   ⚠️ Ficha de {f['id']} sin sumilla ni título (¿cambió el diseño?)")
                     continue
-                # "Ver más...": la ficha muestra sólo algunos coautores; se intenta traer la lista completa
+                # "Ver más...": la ficha muestra sólo algunos coautores; se hace clic para ver la lista completa
                 if fi["ver_mas"]:
                     try:
-                        driver.get("about:blank")
-                        driver.get(BASE + "/spley-portal/" + fi["ver_mas"].lstrip("/"))
-                        WebDriverWait(driver, 15).until(lambda d: d.find_elements(By.CSS_SELECTOR, "a.link-firmante"))
-                        time.sleep(1)
-                        html2 = driver.page_source
-                        if muestras == 0:
-                            with open("ficha_ver_mas_muestra.html", "w", encoding="utf-8") as fh:
-                                fh.write(html2)
-                        co2 = parsear_ficha(html2)["coautores"]
-                        if len(co2) > len(fi["coautores"]):
-                            fi["coautores"] = co2
+                        enlaces = driver.find_elements(By.CSS_SELECTOR, "a.ver-mas")
+                        if enlaces:
+                            driver.execute_script("arguments[0].click();", enlaces[0])
+                            time.sleep(0.8)
+                            html2 = driver.page_source
+                            if muestras == 0:
+                                with open("ficha_ver_mas_muestra.html", "w", encoding="utf-8") as fh:
+                                    fh.write(html2)
+                            from bs4 import BeautifulSoup
+                            sp2 = BeautifulSoup(html2, "html.parser")
+                            candidatos = [parsear_ficha(html2)["coautores"],
+                                          [_txt(x) for x in sp2.select(".p-dialog a.link-firmante") if _txt(x)]]
+                            co2 = [x for x in max(candidatos, key=len) if x != fi["principal"]]
+                            if len(co2) > len(fi["coautores"]):
+                                fi["coautores"] = co2
                     except Exception:
                         pass
                 muestras += 1
@@ -655,6 +674,167 @@ def leer_fichas(items):
             driver.quit()
     print(f"   ✅ Fichas leídas: {len(out)}/{len(items)} · con sumilla: {sum(1 for x in out.values() if x['sumilla'])}")
     return out, errores
+
+
+# ---- leer la FICHA por la API del portal (rápido, sin Chrome) ---------------------------------
+# La página pide: GET {API}/expediente/{AES(perParId)}/{AES(numero)}?codTipoParl=C
+# El cifrado (AES-128-ECB, base64 "url-safe") y su clave los entrega la propia página a todo navegador.
+API_FICHA = "https://api.congreso.gob.pe/spley-portal-service"
+USAR_API = (os.getenv("USAR_API") or "1").strip().lower() not in ("0", "false", "no")
+_CLAVE_ID = {"k": os.getenv("ENCRYPTION_KEY_PORTAL") or "ProdALg5ZrAsxBMD"}
+
+
+def _cifrar_id(valor):
+    """Reproduce encrypt() de la página: AES-128-ECB + PKCS7 -> base64 url-safe sin '='."""
+    clave, datos = _CLAVE_ID["k"].encode("utf-8"), str(valor).encode("utf-8")
+    try:
+        from Crypto.Cipher import AES
+        from Crypto.Util.Padding import pad
+        cif = AES.new(clave, AES.MODE_ECB).encrypt(pad(datos, 16))
+    except ImportError:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        from cryptography.hazmat.primitives import padding
+        pd_ = padding.PKCS7(128).padder()
+        e = Cipher(algorithms.AES(clave), modes.ECB()).encryptor()
+        cif = e.update(pd_.update(datos) + pd_.finalize()) + e.finalize()
+    return base64.b64encode(cif).decode().replace("+", "-").replace("/", "_").replace("=", "")
+
+
+def _refrescar_clave():
+    """Si la clave cambió, la vuelve a leer del JavaScript de la página. True si encontró una distinta."""
+    try:
+        h = {"User-Agent": UA}
+        html = requests.get(f"{BASE}/spley-portal/", headers=h, timeout=30).text
+        for src in re.findall(r'<script[^>]+src="([^"]*main[^"]*\.js)"', html):
+            js = requests.get(src if src.startswith("http") else f"{BASE}/spley-portal/{src.lstrip('/')}",
+                              headers=h, timeout=90).text
+            m = re.search(r'ENCRYPTION_KEY\s*:\s*"([^"]+)"', js)
+            if m and m.group(1) != _CLAVE_ID["k"]:
+                _CLAVE_ID["k"] = m.group(1)
+                print("   🔑 Clave de cifrado actualizada desde la página")
+                return True
+    except Exception as e:
+        print(f"   ⚠️ No se pudo releer la clave: {str(e)[:100]}")
+    return False
+
+
+def ficha_desde_api(data):
+    """JSON de la API (data) -> mismo dict que parsear_ficha()."""
+    g = data.get("general") or {}
+    fi = {"numero_fmt": g.get("proyectoLey") or "", "tipo": "Ley", "fecha_pres": "",
+          "proponente": g.get("desProponente") or "", "titulo": g.get("titulo") or "",
+          "sumilla": g.get("sumilla") or "", "principal": "", "coautores": [], "adherentes": [],
+          "grupo": g.get("desGpar") or "", "estado": g.get("desEstado") or "", "eventos": [],
+          "comisiones": "", "ver_mas": ""}
+    if "resolu" in normalizar_texto(fi["titulo"][:40]):
+        fi["tipo"] = "Resolución legislativa"
+    f = a_fecha(g.get("fecPresentacion"))
+    fi["fecha_pres"] = f.strftime("%d/%m/%Y") if f is not None and not pd.isna(f) else ""
+    for x in data.get("firmantes") or []:
+        nom = (x.get("nombre") or "").strip()
+        if not nom:
+            continue
+        t = x.get("tipoFirmanteId")
+        if t == 1 and not fi["principal"]:
+            fi["principal"] = nom
+        elif t == 3:
+            fi["adherentes"].append(nom)
+        else:
+            fi["coautores"].append(nom)
+    evs, ultimas_com = [], ""
+    for sg in data.get("seguimientos") or []:
+        fecha = a_fecha(str(sg.get("fecha") or "")[:10])
+        if fecha is None or pd.isna(fecha):
+            continue
+        det = (sg.get("detalle") or "").strip()
+        obs = (sg.get("observacion") or "").strip()
+        if obs and obs != det:
+            det = f"{det} {obs}".strip()
+        coms = [c.strip() for c in (sg.get("desComisiones") or "").split(";") if c.strip()]
+        evs.append({"fecha": fecha, "estado": (sg.get("desEstado") or "").strip(), "detalle": det,
+                    "comisiones": coms, "_id": sg.get("seguimientoPleyId") or 0})
+    evs.sort(key=lambda e: (e["fecha"], e["_id"]))        # cronológico; el id desempata el mismo día
+    fi["eventos"] = evs
+    for e in reversed(evs):
+        if e["comisiones"]:
+            ultimas_com = "; ".join(e["comisiones"])
+            break
+    estudio = [re.sub(r"^Comisi[oó]n\s+(?:de\s+(?:la\s+|los\s+|las\s+)?|del\s+)?", "", (c.get("comisionNombre") or "").strip())
+               for c in data.get("estudioComisiones") or []]
+    fi["comisiones"] = "; ".join(dict.fromkeys(x for x in estudio if x)) or ultimas_com
+    if not fi["estado"] and evs:
+        fi["estado"] = evs[-1]["estado"]
+    return fi
+
+
+def _pedir_expediente(periodo, numero):
+    url = f"{API_FICHA}/expediente/{_cifrar_id(periodo)}/{_cifrar_id(numero)}"
+    h = {"User-Agent": UA, "Accept": "application/json", "Origin": BASE, "Referer": BASE + "/"}
+    ultimo = None
+    for k in range(3):
+        try:
+            r = requests.get(url, params={"codTipoParl": "C"}, headers=h, timeout=30)
+            if r.status_code == 200:
+                j = r.json()
+                if isinstance(j, dict) and isinstance(j.get("data"), dict) and j["data"].get("general"):
+                    return j["data"], None
+                ultimo = f"respuesta sin datos ({str(j)[:80]})"
+            else:
+                ultimo = f"HTTP {r.status_code}"
+                if r.status_code in (400, 401, 403, 404):
+                    break                                  # no tiene sentido reintentar
+        except Exception as e:
+            ultimo = str(e)[:100]
+        time.sleep(1.5 * (k + 1))
+    return None, ultimo
+
+
+def leer_fichas_api(items):
+    """items: filas de la lista general. Devuelve ({id: ficha}, n_errores)."""
+    out, errores = {}, 0
+    print(f"\n⚡ Leyendo {len(items)} fichas por la API del portal...")
+    clave_refrescada = False
+    for k, f in enumerate(items, 1):
+        data, err = _pedir_expediente(f["periodo"], f["numero"])
+        if data is None and not clave_refrescada and not out:     # nada ha funcionado aún: ¿cambió la clave?
+            clave_refrescada = True
+            if _refrescar_clave():
+                data, err = _pedir_expediente(f["periodo"], f["numero"])
+        if data is None:
+            errores += 1
+            print(f"   ⚠️ API sin datos para {f['id']}: {err}")
+        else:
+            try:
+                fi = ficha_desde_api(data)
+                if fi["sumilla"] or fi["titulo"]:
+                    out[f["id"]] = fi
+                else:
+                    errores += 1
+                    print(f"   ⚠️ API de {f['id']} sin sumilla ni título")
+            except Exception as e:
+                errores += 1
+                print(f"   ⚠️ Error interpretando {f['id']}: {str(e)[:100]}")
+        if k % 50 == 0:
+            print(f"   … fichas leídas: {k}/{len(items)}")
+        time.sleep(0.15)                                          # trato amable con el servidor
+        if not out and errores >= 5:                              # la API no sirve: se abandona rápido
+            print("   ⛔ La API de fichas no responde; se usará Chrome")
+            break
+    print(f"   ✅ Fichas por API: {len(out)}/{len(items)} · con sumilla: {sum(1 for x in out.values() if x['sumilla'])}")
+    return out, errores
+
+
+def leer_fichas(items):
+    """API primero; lo que falle se lee con Chrome (más lento). Devuelve ({id: ficha}, n_errores)."""
+    out = {}
+    if USAR_API and items:
+        out, _ = leer_fichas_api(items)
+    faltan = [f for f in items if f["id"] not in out]
+    if faltan:
+        print(f"\n🌐 {len(faltan)} fichas por Chrome (respaldo)")
+        o2, _ = leer_fichas_selenium(faltan)
+        out.update(o2)
+    return out, len(items) - len(out)
 
 
 RX_DICTAMEN = re.compile(r"dictamen")
@@ -1070,7 +1250,18 @@ def main():
     print(f"\n📊 Revisados: {revisados} · Energía: {len(energia)} · Descartados: {descartados}")
 
     # --- leer las fichas (Selenium) -------------------------------------------
-    pendientes = [f for f in energia if not (previos.get(f["id"], {}).get("cerrado"))]
+    abiertos = [f for f in energia if not (previos.get(f["id"], {}).get("cerrado"))]
+    completa = COMPLETA or primera or HOY.day <= 7 or USAR_API   # con API se leen todas (≈2 min); con Chrome, mixta
+    pendientes = []
+    for f in abiertos:
+        prev = previos.get(f["id"])
+        if completa or not prev or not prev.get("sumilla") or \
+                normalizar_texto(str(f["estado"] or "")) != normalizar_texto(str(prev.get("estado") or "")):
+            pendientes.append(f)
+        else:
+            f["estado"] = prev.get("estado", f["estado"])   # mismo estado: se conserva el texto ya guardado
+    print(f"\n🔎 Lectura {'COMPLETA' if completa else 'parcial (nuevos y con cambio de estado)'}: "
+          f"{len(pendientes)} fichas por leer de {len(abiertos)} abiertas")
     fichas, n_err = leer_fichas(pendientes)
     errores += n_err
 
