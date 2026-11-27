@@ -8,6 +8,10 @@ on:
         description: 'Opcional: enviar por Telegram la ficha completa de un proyecto (ej. 14288)'
         required: false
         default: ""
+      completa:
+        description: 'Leer TODAS las fichas (si no, sólo nuevos y con cambio de estado; el primer lunes del mes siempre es completa)'
+        type: boolean
+        default: false
   schedule:
     - cron: "0 13 * * 1"      # lunes 8:00 a.m. hora de Lima
 
@@ -29,7 +33,7 @@ jobs:
       - uses: browser-actions/setup-chrome@v1
 
       - name: Instalar dependencias
-        run: pip install requests pandas selenium beautifulsoup4 google-api-python-client google-auth
+        run: pip install requests pandas selenium beautifulsoup4 pycryptodome google-api-python-client google-auth
 
       - name: Descargar, filtrar y detectar cambios
         env:
@@ -40,6 +44,7 @@ jobs:
           PAGE_SIZE: "500"
           SUMILLA_EN_ALERTAS: "nuevos"    # "nuevos" o "todas"
           FICHA_PEDIDO: ${{ github.event.inputs.ficha }}
+          COMPLETA: ${{ github.event.inputs.completa }}
         run: python proyectos_energia_github.py
 
       - name: Guardar archivos de diagnóstico
